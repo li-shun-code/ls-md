@@ -134,14 +134,20 @@ test('opens a Markdown file passed by Windows file association and remembers it'
   try {
     const page = await app.firstWindow()
     await expect(page.locator('.tiptap-editor h1')).toHaveText('桌面打开验证', { timeout: 15_000 })
-    await page.getByRole('tab', { name: '文件' }).click()
-    await expect(page.getByRole('button', { name: path.basename(documentPath) })).toBeVisible()
+
+    await expect.poll(async () => {
+      return app.evaluate(({ Menu }) => {
+        const appMenu = Menu.getApplicationMenu()
+        const fileMenu = appMenu?.items.find((item) => item.label === '文件')
+        const recentMenu = fileMenu?.submenu?.items.find((item) => item.label === '打开最近文件')
+        return recentMenu?.submenu?.items.map((item) => item.label) ?? []
+      })
+    }).toContain(path.basename(documentPath))
 
     await app.close()
     app = await electron.launch({ args: [`--user-data-dir=${userDataPath}`, path.resolve('.')] })
     const reopenedPage = await app.firstWindow()
-    await reopenedPage.getByRole('tab', { name: '文件' }).click()
-    await expect(reopenedPage.getByRole('button', { name: path.basename(documentPath) })).toBeVisible()
+    await expect(reopenedPage.locator('.tiptap-editor h1')).toHaveText('桌面打开验证', { timeout: 15_000 })
   } finally {
     await app.close()
     await rm(userDataPath, { recursive: true, force: true })

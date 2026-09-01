@@ -1,4 +1,5 @@
 import { BrowserWindow, Menu, type MenuItemConstructorOptions } from 'electron'
+import path from 'node:path'
 import type { MenuCommand } from '../shared/types'
 
 function sendCommand(window: BrowserWindow | null, command: MenuCommand): void {
@@ -9,12 +10,46 @@ function sendCommand(window: BrowserWindow | null, command: MenuCommand): void {
   window.webContents.send('menu-command', command)
 }
 
-export function buildApplicationMenu(getWindow: () => BrowserWindow | null): Menu {
+export type ApplicationMenuOptions = {
+  recentFiles?: string[]
+  onOpenRecent?: (filePath: string) => void
+  onClearRecent?: () => void
+}
+
+export function buildApplicationMenu(
+  getWindow: () => BrowserWindow | null,
+  options?: ApplicationMenuOptions
+): Menu {
+  const recentFiles = options?.recentFiles ?? []
+  const onOpenRecent = options?.onOpenRecent
+  const onClearRecent = options?.onClearRecent
+
   const command = (label: string, commandName: MenuCommand, accelerator?: string): MenuItemConstructorOptions => ({
     label,
     accelerator,
     click: () => sendCommand(getWindow(), commandName),
   })
+
+  const recentSubmenu: MenuItemConstructorOptions[] = recentFiles.length > 0
+    ? [
+        ...recentFiles.slice(0, 20).map((filePath) => ({
+          label: path.basename(filePath) || filePath,
+          sublabel: filePath,
+          toolTip: filePath,
+          click: () => onOpenRecent?.(filePath),
+        })),
+        { type: 'separator' },
+        {
+          label: '清除最近打开记录',
+          click: () => onClearRecent?.(),
+        },
+      ]
+    : [
+        {
+          label: '(无最近打开记录)',
+          enabled: false,
+        },
+      ]
 
   const template: MenuItemConstructorOptions[] = [
     {
@@ -23,6 +58,10 @@ export function buildApplicationMenu(getWindow: () => BrowserWindow | null): Men
         command('新建', 'file.new', 'Ctrl+N'),
         command('打开文件夹…', 'file.openFolder', 'Ctrl+Shift+O'),
         command('打开 Markdown…', 'file.open', 'Ctrl+O'),
+        {
+          label: '打开最近文件',
+          submenu: recentSubmenu,
+        },
         { type: 'separator' },
         command('保存', 'file.save', 'Ctrl+S'),
         command('另存为…', 'file.saveAs', 'Ctrl+Shift+S'),

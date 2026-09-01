@@ -27,41 +27,49 @@ export function resolveWorkspacePath(root: string, target: string): string {
 }
 
 async function readDirectory(directoryPath: string): Promise<FileNode[]> {
-  const entries = await readdir(directoryPath, { withFileTypes: true })
-  const nodes: FileNode[] = []
+  try {
+    const entries = await readdir(directoryPath, { withFileTypes: true })
+    const nodes: FileNode[] = []
 
-  for (const entry of entries) {
-    if (entry.name.startsWith('.') && entry.name !== '.markdown-desk') {
-      continue
-    }
-
-    const entryPath = path.join(directoryPath, entry.name)
-    if (entry.isDirectory()) {
-      if (IGNORED_DIRECTORIES.has(entry.name)) {
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') && entry.name !== '.markdown-desk') {
         continue
       }
 
-      nodes.push({
-        name: entry.name,
-        path: entryPath,
-        kind: 'directory',
-        children: await readDirectory(entryPath),
-      })
-      continue
+      const entryPath = path.join(directoryPath, entry.name)
+      if (entry.isDirectory()) {
+        if (IGNORED_DIRECTORIES.has(entry.name)) {
+          continue
+        }
+
+        try {
+          nodes.push({
+            name: entry.name,
+            path: entryPath,
+            kind: 'directory',
+            children: await readDirectory(entryPath),
+          })
+        } catch {
+          // ignore inaccessible directory
+        }
+        continue
+      }
+
+      if (entry.isFile() && isMarkdownPath(entryPath)) {
+        nodes.push({ name: entry.name, path: entryPath, kind: 'file' })
+      }
     }
 
-    if (entry.isFile() && isMarkdownPath(entryPath)) {
-      nodes.push({ name: entry.name, path: entryPath, kind: 'file' })
-    }
+    return nodes.sort((left, right) => {
+      if (left.kind !== right.kind) {
+        return left.kind === 'directory' ? -1 : 1
+      }
+
+      return left.name.localeCompare(right.name, 'zh-CN', { numeric: true, sensitivity: 'base' })
+    })
+  } catch {
+    return []
   }
-
-  return nodes.sort((left, right) => {
-    if (left.kind !== right.kind) {
-      return left.kind === 'directory' ? -1 : 1
-    }
-
-    return left.name.localeCompare(right.name, 'zh-CN', { numeric: true, sensitivity: 'base' })
-  })
 }
 
 export async function listWorkspace(root: string): Promise<FileNode[]> {

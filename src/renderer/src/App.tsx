@@ -1,5 +1,5 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type WheelEvent } from 'react'
-import { ChevronLeft, Code2, FileText, FolderOpen, PanelLeft, Search, Sparkles } from 'lucide-react'
+import { ChevronLeft, Code2, FolderOpen, PanelLeft, Search, Sparkles } from 'lucide-react'
 import type { FileNode, MenuCommand, MarkdownMode, OpenedDocument, WorkspaceSelection } from '@shared/types'
 import { FileTree } from '@renderer/components/FileTree'
 import { IconButton } from '@renderer/components/IconButton'
@@ -40,9 +40,6 @@ export function App() {
   const [notice, setNotice] = useState('')
   const [preview, setPreview] = useState<EditorPreview | null>(null)
   const [previewZoom, setPreviewZoom] = useState(1)
-  const [recentPaths, setRecentPaths] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('markdown-desk-recent') ?? '[]') as string[] } catch { return [] }
-  })
 
   const deferredMarkdown = useDeferredValue(markdown)
   const outline = useMemo(() => extractOutline(deferredMarkdown), [deferredMarkdown])
@@ -55,11 +52,6 @@ export function App() {
   activePathRef.current = activePath
 
   const rememberRecent = useCallback((filePath: string) => {
-    setRecentPaths((current) => {
-      const next = [filePath, ...current.filter((item) => item !== filePath)].slice(0, 8)
-      try { localStorage.setItem('markdown-desk-recent', JSON.stringify(next)) } catch { /* ignore */ }
-      return next
-    })
     try { localStorage.setItem('markdown-desk-last-file', filePath) } catch { /* ignore */ }
   }, [])
 
@@ -199,15 +191,7 @@ export function App() {
       }
     }, 80)
     return () => window.clearTimeout(timer)
-  }, [])
-
-  const openRecent = useCallback(async (filePath: string) => {
-    try {
-      await window.desktop.openMarkdownPath(filePath)
-    } catch (error) {
-      showNotice(error instanceof Error ? error.message : '最近文件已无法打开')
-    }
-  }, [showNotice])
+  }, [openDocument])
 
   const openWorkspace = useCallback(async () => {
     try {
@@ -381,10 +365,6 @@ export function App() {
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [preview])
 
-  useEffect(() => {
-    localStorage.setItem('markdown-desk-recent', JSON.stringify(recentPaths))
-  }, [recentPaths])
-
   useEffect(() => window.desktop.onMenuCommand(handleMenuCommand), [handleMenuCommand])
 
   useEffect(() => window.desktop.onWorkspaceSelected((selection: WorkspaceSelection) => {
@@ -500,29 +480,7 @@ export function App() {
                     </div>
                   ) : null}
 
-                  {recentPaths.length > 0 ? (
-                    <section className="recent-files" aria-labelledby="recent-files-title">
-                      <div className="recent-files-heading">
-                        <span id="recent-files-title" className="eyebrow">最近打开</span>
-                      </div>
-                      <div className="recent-files-list">
-                        {recentPaths.map((filePath) => (
-                          <button
-                            type="button"
-                            className={`recent-file${filePath === activePath ? ' is-active' : ''}`}
-                            key={filePath}
-                            title={filePath}
-                            onClick={() => void openRecent(filePath)}
-                          >
-                            <FileText size={15} strokeWidth={1.7} aria-hidden="true" />
-                            <span className="recent-file-label">{filePath.split(/[\\/]/).pop() ?? filePath}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
-
-                  {!workspaceRoot && recentPaths.length === 0 ? <div className="sidebar-blank" aria-label="尚未选择工作区" /> : null}
+                  {!workspaceRoot ? <div className="sidebar-blank" aria-label="尚未选择工作区" /> : null}
                 </div>
               ) : (
                 <Outline items={outline} activeLine={cursor.line} onSelect={handleOutlineSelect} />

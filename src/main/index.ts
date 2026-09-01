@@ -12,6 +12,7 @@ import {
 } from './file-service'
 import { AiService } from './ai-service'
 import { buildApplicationMenu } from './menu'
+import { RecentService } from './recent-service'
 import { RecoveryService } from './recovery-service'
 import type { AiRequest, AiSettingsInput, OpenedDocument, RecoverySnapshot, WorkspaceSelection } from '../shared/types'
 
@@ -20,6 +21,7 @@ const isPrimaryInstance = app.requestSingleInstanceLock()
 let mainWindow: BrowserWindow | null = null
 let workspaceRoot: string | null = null
 let recoveryService: RecoveryService
+let recentService: RecentService
 let aiService: AiService
 let watchedFile: string | null = null
 let fileWatcher: FSWatcher | null = null
@@ -43,14 +45,6 @@ function findMarkdownArgument(args: string[]): string | null {
 
 function isTrustedSender(sender: Electron.WebContents): boolean {
   return mainWindow !== null && sender === mainWindow.webContents
-}
-
-function requireWorkspace(): string {
-  if (!workspaceRoot) {
-    throw new Error('请先打开一个工作区')
-  }
-
-  return workspaceRoot
 }
 
 function watchDocument(filePath: string): void {
@@ -110,6 +104,23 @@ async function openMarkdownDialog(): Promise<void> {
   await openMarkdownFile(selectedPath)
 }
 
+async function updateApplicationMenu(): Promise<void> {
+  const recentFiles = recentService ? await recentService.getRecentFiles() : []
+  const menu = buildApplicationMenu(() => mainWindow, {
+    recentFiles,
+    onOpenRecent: (filePath) => {
+      void openMarkdownFile(filePath)
+    },
+    onClearRecent: async () => {
+      if (recentService) {
+        await recentService.clearRecentFiles()
+        await updateApplicationMenu()
+      }
+    },
+  })
+  Menu.setApplicationMenu(menu)
+}
+
 async function openMarkdownFile(filePath: string): Promise<void> {
   if (!isMarkdownPath(filePath)) return
   if (!mainWindow) {
@@ -119,10 +130,34 @@ async function openMarkdownFile(filePath: string): Promise<void> {
 
   const resolvedPath = path.resolve(filePath)
   workspaceRoot = path.dirname(resolvedPath)
-  const content = await readMarkdown(workspaceRoot, resolvedPath)
-  watchDocument(resolvedPath)
-  mainWindow.webContents.send('document-opened', { path: resolvedPath, content } satisfies OpenedDocument)
-  sendWorkspaceSelection(await listWorkspace(workspaceRoot))
+  try {
+    const content = await readMarkdown(workspaceRoot, resolvedPath)
+    watchDocument(resolvedPath)
+    mainWindow.webContents.send('document-opened', { path: resolvedPath, content } satisfies OpenedDocument)
+    if (recentService) {
+      await recentService.addRecentFile(resolvedPath)
+      await updateApplicationMenu()
+    }
+    try {
+      const tree = await listWorkspace(workspaceRoot)
+      sendWorkspaceSelection(tree)
+    } catch {
+      // 工作区目录扫描失败时（如系统临时目录权限限制），不影响当前文档正常打开
+    }
+  } catch (error) {
+    if (recentService) {
+      await recentService.removeRecentFile(resolvedPath)
+      await updateApplicationMenu()
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: '无法打开文件',
+        message: `无法打开 Markdown 文件：\n${resolvedPath}\n\n原因：${message}`,
+      })
+    }
+  }
 }
 
 async function createWindow(): Promise<void> {
@@ -189,15 +224,31 @@ function registerIpc(): void {
 
   ipcMain.handle('file:read', async (event, filePath: string) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
-    const content = await readMarkdown(requireWorkspace(), filePath)
-    watchDocument(filePath)
+    const resolvedPath = path.resolve(filePath)
+    if (!workspaceRoot) {
+      workspaceRoot = path.dirname(resolvedPath)
+    }
+    const content = await readMarkdown(workspaceRoot, resolvedPath)
+    watchDocument(resolvedPath)
+    if (recentService) {
+      await recentService.addRecentFile(resolvedPath)
+      await updateApplicationMenu()
+    }
     return content
   })
 
   ipcMain.handle('file:write', async (event, filePath: string, content: string) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
-    await writeMarkdown(requireWorkspace(), filePath, content)
-    watchDocument(filePath)
+    const resolvedPath = path.resolve(filePath)
+    if (!workspaceRoot) {
+      workspaceRoot = path.dirname(resolvedPath)
+    }
+    await writeMarkdown(workspaceRoot, resolvedPath, content)
+    watchDocument(resolvedPath)
+    if (recentService) {
+      await recentService.addRecentFile(resolvedPath)
+      await updateApplicationMenu()
+    }
   })
 
   ipcMain.handle('file:save-as', async (event, sourcePath: string, content: string) => {
@@ -212,7 +263,24 @@ function registerIpc(): void {
     workspaceRoot = path.dirname(targetPath)
     await writeMarkdown(workspaceRoot, targetPath, content)
     watchDocument(targetPath)
+    if (recentService) {
+      await recentService.addRecentFile(targetPath)
+      await updateApplicationMenu()
+    }
     return { path: targetPath, content } satisfies OpenedDocument
+  })
+
+  ipcMain.handle('recent:get', async (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return recentService ? recentService.getRecentFiles() : []
+  })
+
+  ipcMain.handle('recent:clear', async (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    if (recentService) {
+      await recentService.clearRecentFiles()
+      await updateApplicationMenu()
+    }
   })
 
   ipcMain.handle('asset:copy', async (event, sourcePath: string, root: string) => {
@@ -302,10 +370,11 @@ app.whenReady().then(async () => {
   if (!isPrimaryInstance) return
   try {
     recoveryService = new RecoveryService(app.getPath('userData'))
+    recentService = new RecentService(app.getPath('userData'), 20)
     aiService = new AiService(app.getPath('userData'))
     registerIpc()
     await createWindow()
-    Menu.setApplicationMenu(buildApplicationMenu(() => mainWindow))
+    await updateApplicationMenu()
 
     if (pendingOpenPath) {
       const initialPath = pendingOpenPath
