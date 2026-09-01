@@ -43,14 +43,11 @@ jobs:
       - name: Build & Package for Windows
         if: matrix.platform == 'win'
         run: npm run dist:win
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & Package for macOS
         if: matrix.platform == 'mac'
         run: npm run dist:mac
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
           ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: true
 
