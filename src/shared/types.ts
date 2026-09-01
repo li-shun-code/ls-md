@@ -133,6 +133,7 @@ export type MenuCommand =
   | 'view.resetZoom'
   | 'theme.toggle'
   | 'help.shortcuts'
+  | 'help.welcomeDocument'
 
 export type DesktopBridge = {
   chooseWorkspace: () => Promise<string | null>

@@ -13,6 +13,8 @@ import {
   markdownFromEditor,
 } from '@renderer/utils/markdown'
 import type { OutlineItem } from '@renderer/utils/markdown'
+import { downloadDiagram, downloadImage, type ExportFormat } from '@renderer/utils/diagram-export'
+import { WELCOME_DOCUMENT_MARKDOWN } from '@renderer/utils/welcome-document'
 import './styles.css'
 
 type SidebarTab = 'files' | 'outline'
@@ -24,8 +26,8 @@ export function App() {
   const [fileTree, setFileTree] = useState<FileNode[]>([])
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
   const [activePath, setActivePath] = useState('')
-  const [markdown, setMarkdown] = useState('')
-  const [savedMarkdown, setSavedMarkdown] = useState('')
+  const [markdown, setMarkdown] = useState(WELCOME_DOCUMENT_MARKDOWN)
+  const [savedMarkdown, setSavedMarkdown] = useState(WELCOME_DOCUMENT_MARKDOWN)
   const [mode, setMode] = useState<MarkdownMode>('wysiwyg')
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('outline')
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('markdown-desk-sidebar') !== 'closed')
@@ -71,30 +73,32 @@ export function App() {
   }, [mode])
 
   const [isPanning, setIsPanning] = useState(false)
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const previewStageRef = useRef<HTMLDivElement>(null)
   const panStartRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null)
 
   const handleOpenPreview = useCallback((nextPreview: EditorPreview) => {
+    setDownloadMenuOpen(false)
     setPreviewZoom(1)
     setPreview(nextPreview)
   }, [])
 
   const changePreviewZoom = useCallback((delta: number) => {
-    setPreviewZoom((current) => Math.round(Math.min(4, Math.max(0.5, current + delta)) * 100) / 100)
+    setPreviewZoom((current) => Math.round(Math.min(4, Math.max(0.3, current + delta)) * 100) / 100)
   }, [])
 
-  const copyPreviewContent = useCallback(async () => {
+  const handleDownload = useCallback(async (format: ExportFormat) => {
     if (!preview) return
     try {
+      setDownloadMenuOpen(false)
       if (preview.kind === 'svg') {
-        await navigator.clipboard.writeText(preview.markup)
-        showNotice('已复制流程图 SVG 源码')
+        await downloadDiagram(preview.markup, format, preview.title)
       } else {
-        await navigator.clipboard.writeText(preview.src)
-        showNotice('已复制图片链接')
+        await downloadImage(preview.src, format === 'svg' ? 'png' : format, preview.alt)
       }
-    } catch {
-      showNotice('复制失败')
+      showNotice(`已下载为 ${format.toUpperCase()} 格式`)
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '下载失败')
     }
   }, [preview, showNotice])
 
@@ -116,8 +120,15 @@ export function App() {
     event.preventDefault()
     const deltaX = event.clientX - panStartRef.current.x
     const deltaY = event.clientY - panStartRef.current.y
-    previewStageRef.current.scrollLeft = panStartRef.current.scrollLeft - deltaX
-    previewStageRef.current.scrollTop = panStartRef.current.scrollTop - deltaY
+    const stage = previewStageRef.current
+    const targetLeft = panStartRef.current.scrollLeft - deltaX
+    const targetTop = panStartRef.current.scrollTop - deltaY
+    window.requestAnimationFrame(() => {
+      if (stage) {
+        stage.scrollLeft = targetLeft
+        stage.scrollTop = targetTop
+      }
+    })
   }, [])
 
   const handleStageMouseUp = useCallback(() => {
@@ -302,6 +313,17 @@ export function App() {
     if (headingIndex >= 0) editorRef.current?.selectHeading(headingIndex, item.line)
   }, [outline])
 
+  const openWelcomeDocument = useCallback(() => {
+    if (dirty && !window.confirm('当前文档有未保存的修改，确定要载入功能指南吗？')) return
+    setActivePath('')
+    setMarkdown(WELCOME_DOCUMENT_MARKDOWN)
+    setSavedMarkdown(WELCOME_DOCUMENT_MARKDOWN)
+    setMode('wysiwyg')
+    setCursor({ line: 1, column: 1 })
+    editorRef.current?.loadMarkdown(WELCOME_DOCUMENT_MARKDOWN)
+    showNotice('已载入《功能全景指南》')
+  }, [dirty, showNotice])
+
   const handleMenuCommand = useCallback((command: MenuCommand) => {
     switch (command) {
       case 'file.new': newDocument(); break
@@ -341,8 +363,9 @@ export function App() {
       case 'view.resetZoom': setZoom(1); break
       case 'theme.toggle': setTheme((current) => current === 'light' ? 'dark' : 'light'); break
       case 'help.shortcuts': setShortcutsOpen(true); break
+      case 'help.welcomeDocument': openWelcomeDocument(); break
     }
-  }, [exportDocument, newDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
+  }, [exportDocument, newDocument, openWelcomeDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
 
   useEffect(() => {
     localStorage.setItem('markdown-desk-theme', theme)
@@ -480,7 +503,14 @@ export function App() {
                     </div>
                   ) : null}
 
-                  {!workspaceRoot ? <div className="sidebar-blank" aria-label="尚未选择工作区" /> : null}
+                  {!workspaceRoot ? (
+                    <div className="sidebar-empty">
+                      <FolderOpen size={20} strokeWidth={1.6} aria-hidden="true" />
+                      <p>未打开文件夹工作区</p>
+                      <button type="button" className="text-button" onClick={() => void openWorkspace()}>打开工作区</button>
+                      <button type="button" className="text-button" style={{ marginTop: '6px' }} onClick={openWelcomeDocument}>查看功能全景指南</button>
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <Outline items={outline} activeLine={cursor.line} onSelect={handleOutlineSelect} />
@@ -600,22 +630,87 @@ export function App() {
       )}
 
       {preview && (
-        <div className="preview-backdrop" role="presentation" onMouseDown={() => setPreview(null)}>
-          <section className="preview-dialog" role="dialog" aria-modal="true" aria-label={preview.kind === 'svg' ? preview.title : preview.alt} onMouseDown={(event) => event.stopPropagation()}>
+        <div
+          className="preview-backdrop"
+          role="presentation"
+          onMouseDown={() => {
+            setDownloadMenuOpen(false)
+            setPreview(null)
+          }}
+        >
+          <section
+            className="preview-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={preview.kind === 'svg' ? preview.title : preview.alt}
+            onMouseDown={(event) => {
+              event.stopPropagation()
+              if (downloadMenuOpen) setDownloadMenuOpen(false)
+            }}
+          >
             <div className="preview-dialog-header">
               <div className="preview-header-left">
                 <span className="preview-title">{preview.kind === 'svg' ? preview.title : preview.alt}</span>
-                <span className="preview-type-badge">{preview.kind === 'svg' ? 'Mermaid 矢量图' : '图片'}</span>
+                <span className="preview-type-badge">{preview.kind === 'svg' ? 'Mermaid 流程图' : '图片'}</span>
               </div>
               <div className="preview-actions">
                 <span className="preview-zoom-label" aria-live="polite">{Math.round(previewZoom * 100)}% · Ctrl + 滚轮缩放 / 拖拽平移</span>
                 <button type="button" className="preview-zoom-button" aria-label="缩小预览" title="缩小预览 (Ctrl + -)" onClick={() => changePreviewZoom(-0.1)}>−</button>
                 <button type="button" className="preview-zoom-button preview-zoom-reset" aria-label="重置预览缩放" title="重置 100%" onClick={() => setPreviewZoom(1)}>100%</button>
                 <button type="button" className="preview-zoom-button" aria-label="放大预览" title="放大预览 (Ctrl + +)" onClick={() => changePreviewZoom(0.1)}>＋</button>
-                <button type="button" className="preview-copy-button" aria-label="复制预览内容" onClick={() => void copyPreviewContent()}>
-                  {preview.kind === 'svg' ? '复制 SVG' : '复制链接'}
+                <div className="preview-download-wrapper" onMouseDown={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    className={`preview-download-button${downloadMenuOpen ? ' is-active' : ''}`}
+                    aria-haspopup="true"
+                    aria-expanded={downloadMenuOpen}
+                    onClick={() => setDownloadMenuOpen((current) => !current)}
+                  >
+                    下载 ▾
+                  </button>
+                  {downloadMenuOpen && (
+                    <div className="preview-download-dropdown" role="menu">
+                      <button
+                        type="button"
+                        className="preview-download-item"
+                        role="menuitem"
+                        onClick={() => void handleDownload('png')}
+                      >
+                        <span className="dropdown-icon">🖼️</span> 下载为 PNG 图片
+                      </button>
+                      {preview.kind === 'svg' && (
+                        <button
+                          type="button"
+                          className="preview-download-item"
+                          role="menuitem"
+                          onClick={() => void handleDownload('svg')}
+                        >
+                          <span className="dropdown-icon">📐</span> 下载为 SVG 矢量图
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="preview-download-item"
+                        role="menuitem"
+                        onClick={() => void handleDownload('jpeg')}
+                      >
+                        <span className="dropdown-icon">📷</span> 下载为 JPEG 图片
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="preview-close"
+                  autoFocus
+                  aria-label="关闭"
+                  onClick={() => {
+                    setDownloadMenuOpen(false)
+                    setPreview(null)
+                  }}
+                >
+                  关闭
                 </button>
-                <button type="button" className="preview-close" autoFocus aria-label="关闭" onClick={() => setPreview(null)}>关闭</button>
               </div>
             </div>
             <div
@@ -630,11 +725,12 @@ export function App() {
             >
               <div className="preview-zoom-surface" style={{ '--preview-zoom': previewZoom } as CSSProperties}>
                 <div className="preview-zoom-content">
-                  {preview.kind === 'image' ? (
-                    <img src={preview.src} alt={preview.alt} draggable={false} />
-                  ) : (
-                    <div className="preview-svg" dangerouslySetInnerHTML={{ __html: preview.markup }} />
-                  )}
+                  <img
+                    src={preview.src}
+                    alt={preview.kind === 'svg' ? preview.title : preview.alt}
+                    draggable={false}
+                    className={preview.kind === 'svg' ? 'preview-diagram-image' : 'preview-normal-image'}
+                  />
                 </div>
               </div>
             </div>

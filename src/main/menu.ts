@@ -131,6 +131,11 @@ export function buildApplicationMenu(
       label: '帮助',
       submenu: [
         {
+          label: '功能介绍与示例文档',
+          click: () => sendCommand(getWindow(), 'help.welcomeDocument'),
+        },
+        { type: 'separator' },
+        {
           label: '快捷键',
           click: () => sendCommand(getWindow(), 'help.shortcuts'),
         },

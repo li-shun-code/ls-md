@@ -1239,21 +1239,76 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 }
 .preview-zoom-reset { font-size: 11px; font-weight: 500; }
 
-.preview-copy-button {
+.preview-download-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.preview-download-button {
   height: 28px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--accent);
   border-radius: 4px;
-  color: var(--muted);
-  background: var(--surface);
+  color: #ffffff;
+  background: var(--accent);
   font-size: 12px;
   font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
   transition: all 150ms ease;
 }
-.preview-copy-button:hover {
+.preview-download-button:hover,
+.preview-download-button.is-active {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.preview-download-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  min-width: 170px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-xl);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: dropdownFadeIn 150ms ease;
+}
+
+@keyframes dropdownFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.preview-download-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.preview-download-item:hover {
+  background: var(--surface-soft);
   color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-soft);
+}
+.preview-download-item .dropdown-icon {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .preview-close {
@@ -1265,6 +1320,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   background: var(--muted);
   font-size: 12px;
   font-weight: 500;
+  cursor: pointer;
   transition: all 150ms ease;
 }
 .preview-close:hover { background: var(--text); }
@@ -1276,6 +1332,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   padding: 32px;
   background: var(--canvas);
   cursor: default;
+  overscroll-behavior: contain;
 }
 .preview-stage.is-diagram {
   cursor: grab;
@@ -1292,42 +1349,44 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   min-height: 100%;
   align-items: center;
   justify-content: center;
+  padding: 24px;
 }
 .preview-zoom-content {
   width: max-content;
-  zoom: var(--preview-zoom);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: scale(var(--preview-zoom));
+  transform-origin: center center;
+  will-change: transform;
+  transition: transform 80ms ease-out;
+}
+.preview-stage.is-panning .preview-zoom-content {
+  transition: none;
 }
 
 .preview-stage img {
   display: block;
-  max-width: min(1000px, calc(90vw - 80px));
+  user-select: none;
+  pointer-events: none;
+}
+
+.preview-normal-image {
+  max-width: min(1100px, calc(90vw - 80px));
   max-height: calc(82vh - 90px);
   object-fit: contain;
   border-radius: 6px;
   box-shadow: var(--shadow-md);
 }
 
-/* Diagram preview: fills comfortable width without being tiny */
-.preview-stage.is-diagram .preview-svg {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  width: max-content;
-  max-width: min(1000px, 90vw);
-  margin: 0 auto;
-  padding: 16px;
+.preview-diagram-image {
+  max-width: none;
+  max-height: none;
   background: var(--surface);
   border-radius: 8px;
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
-}
-
-.preview-svg svg {
-  display: block;
-  min-width: min(480px, 75vw);
-  max-width: min(1000px, 88vw);
-  width: auto !important;
-  height: auto !important;
+  padding: 16px;
 }
 
 /* ==========================================================================

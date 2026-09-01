@@ -19,6 +19,7 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { TextSelection } from '@tiptap/pm/state'
 import type { AiSelection, MarkdownMode } from '@shared/types'
 import { markdownForEditor, markdownFromEditor } from '@renderer/utils/markdown'
+import { svgToHighResImage } from '@renderer/utils/diagram-export'
 
 mermaid.initialize({
   startOnLoad: false,
@@ -61,7 +62,7 @@ export type EditorCommands = {
 
 export type EditorPreview =
   | { kind: 'image'; src: string; alt: string }
-  | { kind: 'svg'; markup: string; title: string }
+  | { kind: 'svg'; src: string; markup: string; title: string; width?: number; height?: number }
 
 type MarkdownEditorProps = {
   markdown: string
@@ -138,7 +139,10 @@ function createMermaidNodeView(node: ProseMirrorNode, onOpenPreview?: (preview: 
         clone.setAttribute('viewBox', `0 0 ${clone.getAttribute('width')} ${clone.getAttribute('height')}`)
       }
       clone.setAttribute('style', 'width: 100%; height: auto; display: block;')
-      onOpenPreview({ kind: 'svg', markup: clone.outerHTML, title: '流程图' })
+      const markup = clone.outerHTML
+      void svgToHighResImage(markup, 2.5).then(({ dataUrl, width, height }) => {
+        onOpenPreview({ kind: 'svg', src: dataUrl, markup, title: '流程图', width, height })
+      })
     }
   })
 
@@ -356,7 +360,10 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
               clone.setAttribute('viewBox', `0 0 ${clone.getAttribute('width')} ${clone.getAttribute('height')}`)
             }
             clone.setAttribute('style', 'width: 100%; height: auto; display: block;')
-            onOpenPreviewRef.current({ kind: 'svg', markup: clone.outerHTML, title: '流程图' })
+            const markup = clone.outerHTML
+            void svgToHighResImage(markup, 2.5).then(({ dataUrl, width, height }) => {
+              onOpenPreviewRef.current({ kind: 'svg', src: dataUrl, markup, title: '流程图', width, height })
+            })
             return true
           }
 
