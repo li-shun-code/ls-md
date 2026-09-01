@@ -119,7 +119,7 @@ describe('welcome document', () => {
     expect(WELCOME_DOCUMENT_MARKDOWN).toContain('欢迎使用墨笺')
     expect(WELCOME_DOCUMENT_MARKDOWN).toContain('```mermaid')
     expect(WELCOME_DOCUMENT_MARKDOWN).toContain('sequenceDiagram')
-    expect(WELCOME_DOCUMENT_MARKDOWN).toContain('$$')
+    expect(WELCOME_DOCUMENT_MARKDOWN).toContain('$E = mc^2$')
     expect(WELCOME_DOCUMENT_MARKDOWN).toContain('AI 智能创作')
     expect(WELCOME_DOCUMENT_MARKDOWN).toContain('快捷键')
   })

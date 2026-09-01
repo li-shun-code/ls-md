@@ -13,13 +13,14 @@ import TaskItem from '@tiptap/extension-task-item'
 import TaskList from '@tiptap/extension-task-list'
 import Typography from '@tiptap/extension-typography'
 import Highlight from '@tiptap/extension-highlight'
+import { Mathematics } from '@tiptap/extension-mathematics'
+import 'katex/dist/katex.min.css'
 import mermaid from 'mermaid'
 import { common, createLowlight } from 'lowlight'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { TextSelection } from '@tiptap/pm/state'
 import type { AiSelection, MarkdownMode } from '@shared/types'
 import { markdownForEditor, markdownFromEditor } from '@renderer/utils/markdown'
-import { svgToHighResImage } from '@renderer/utils/diagram-export'
 
 mermaid.initialize({
   startOnLoad: false,
@@ -34,6 +35,36 @@ mermaid.initialize({
     tertiaryColor: '#ffffff',
   },
 })
+
+function prepareSvgForPreview(svg: SVGElement): { markup: string; width: number; height: number } {
+  const clone = svg.cloneNode(true) as SVGElement
+  clone.removeAttribute('style')
+
+  let width = 800
+  let height = 600
+  const viewBox = clone.getAttribute('viewBox')
+  if (viewBox) {
+    const parts = viewBox.trim().split(/[\s,]+/).map(Number)
+    if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+      width = parts[2]
+      height = parts[3]
+    }
+  } else {
+    const w = parseFloat(clone.getAttribute('width') ?? '')
+    const h = parseFloat(clone.getAttribute('height') ?? '')
+    if (w > 0 && h > 0) {
+      width = w
+      height = h
+      clone.setAttribute('viewBox', `0 0 ${w} ${h}`)
+    }
+  }
+
+  clone.setAttribute('width', `${width}`)
+  clone.setAttribute('height', `${height}`)
+  clone.setAttribute('style', `width: ${width}px; height: ${height}px; max-width: none; max-height: none; display: block;`)
+
+  return { markup: clone.outerHTML, width, height }
+}
 
 export type EditorCommands = {
   focus: () => void
@@ -62,7 +93,7 @@ export type EditorCommands = {
 
 export type EditorPreview =
   | { kind: 'image'; src: string; alt: string }
-  | { kind: 'svg'; src: string; markup: string; title: string; width?: number; height?: number }
+  | { kind: 'svg'; markup: string; title: string; width?: number; height?: number }
 
 type MarkdownEditorProps = {
   markdown: string
@@ -132,17 +163,8 @@ function createMermaidNodeView(node: ProseMirrorNode, onOpenPreview?: (preview: 
     event.stopPropagation()
     const svg = preview.querySelector('svg')
     if (svg instanceof SVGElement && onOpenPreview) {
-      const clone = svg.cloneNode(true) as SVGElement
-      clone.removeAttribute('style')
-      clone.removeAttribute('height')
-      if (!clone.getAttribute('viewBox') && clone.getAttribute('width') && clone.getAttribute('height')) {
-        clone.setAttribute('viewBox', `0 0 ${clone.getAttribute('width')} ${clone.getAttribute('height')}`)
-      }
-      clone.setAttribute('style', 'width: 100%; height: auto; display: block;')
-      const markup = clone.outerHTML
-      void svgToHighResImage(markup, 2.5).then(({ dataUrl, width, height }) => {
-        onOpenPreview({ kind: 'svg', src: dataUrl, markup, title: '流程图', width, height })
-      })
+      const { markup, width, height } = prepareSvgForPreview(svg)
+      onOpenPreview({ kind: 'svg', markup, title: '流程图', width, height })
     }
   })
 
@@ -325,6 +347,11 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
     TaskItem.configure({ nested: true }),
     Typography,
     Highlight,
+    Mathematics.configure({
+      katex: {
+        throwOnError: false,
+      },
+    }),
   ], [lowlight])
 
   const editor = useEditor({
@@ -353,17 +380,8 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
           const svg = diagram?.querySelector('svg')
           if (svg instanceof SVGElement) {
             event.preventDefault()
-            const clone = svg.cloneNode(true) as SVGElement
-            clone.removeAttribute('style')
-            clone.removeAttribute('height')
-            if (!clone.getAttribute('viewBox') && clone.getAttribute('width') && clone.getAttribute('height')) {
-              clone.setAttribute('viewBox', `0 0 ${clone.getAttribute('width')} ${clone.getAttribute('height')}`)
-            }
-            clone.setAttribute('style', 'width: 100%; height: auto; display: block;')
-            const markup = clone.outerHTML
-            void svgToHighResImage(markup, 2.5).then(({ dataUrl, width, height }) => {
-              onOpenPreviewRef.current({ kind: 'svg', src: dataUrl, markup, title: '流程图', width, height })
-            })
+            const { markup, width, height } = prepareSvgForPreview(svg)
+            onOpenPreviewRef.current({ kind: 'svg', markup, title: '流程图', width, height })
             return true
           }
 

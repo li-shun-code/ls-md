@@ -1346,22 +1346,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   display: flex;
   width: max-content;
   min-width: 100%;
-  min-height: 100%;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 24px;
+  padding: 32px;
+  box-sizing: border-box;
 }
 .preview-zoom-content {
-  width: max-content;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.preview-zoom-content .preview-normal-image {
   transform: scale(var(--preview-zoom));
   transform-origin: center center;
   will-change: transform;
   transition: transform 80ms ease-out;
 }
-.preview-stage.is-panning .preview-zoom-content {
+.preview-stage.is-panning .preview-zoom-content .preview-normal-image {
   transition: none;
 }
 
@@ -1379,14 +1380,43 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   box-shadow: var(--shadow-md);
 }
 
-.preview-diagram-image {
-  max-width: none;
-  max-height: none;
+.preview-diagram-svg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--surface);
   border-radius: 8px;
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
-  padding: 16px;
+  padding: 24px;
+}
+
+.preview-diagram-svg svg {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  pointer-events: none;
+}
+
+/* KaTeX Mathematics styling */
+.tiptap .tiptap-mathematics {
+  background: var(--surface-soft);
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.tiptap .tiptap-mathematics:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.tiptap .katex-display {
+  margin: 1.2em 0;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 /* ==========================================================================

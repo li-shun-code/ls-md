@@ -724,13 +724,28 @@ export function App() {
               onMouseLeave={handleStageMouseUp}
             >
               <div className="preview-zoom-surface" style={{ '--preview-zoom': previewZoom } as CSSProperties}>
-                <div className="preview-zoom-content">
-                  <img
-                    src={preview.src}
-                    alt={preview.kind === 'svg' ? preview.title : preview.alt}
-                    draggable={false}
-                    className={preview.kind === 'svg' ? 'preview-diagram-image' : 'preview-normal-image'}
-                  />
+                <div
+                  className="preview-zoom-content"
+                  style={preview.kind === 'svg' ? { zoom: previewZoom } : undefined}
+                >
+                  {preview.kind === 'image' ? (
+                    <img
+                      src={preview.src}
+                      alt={preview.alt}
+                      draggable={false}
+                      className="preview-normal-image"
+                    />
+                  ) : (
+                    <div
+                      className="preview-diagram-svg"
+                      style={
+                        preview.width && preview.height
+                          ? { width: preview.width, height: preview.height }
+                          : undefined
+                      }
+                      dangerouslySetInnerHTML={{ __html: preview.markup }}
+                    />
+                  )}
                 </div>
               </div>
             </div>

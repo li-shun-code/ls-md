@@ -133,33 +133,21 @@ pie title 文档构成类型分布
 
 ---
 
-## 📐 KaTeX 复杂数学公式
+## 📐 KaTeX 数学公式
 
 无论是行内公式还是独立块级公式，均可精准呈现：
 
 ### 行内公式
-爱因斯坦质能方程：$E = mc^2$，欧拉恒等式：$e^{i\\pi} + 1 = 0$。
+爱因斯坦质能方程：$E = mc^2$，欧拉恒等式：$e^{i\pi} + 1 = 0$，黄金比例：$\varphi = \frac{1 + \sqrt{5}}{2}$。
 
-### 独立矩阵与微积分公式
-$$
-\\int_{-\\infty}^{+\\infty} e^{-x^2} dx = \\sqrt{\\pi}
-$$
+### 高斯积分
+$\displaystyle\int_{-\infty}^{+\infty} e^{-x^2}\, dx = \sqrt{\pi}$
 
-$$
-\\begin{pmatrix}
-\\cos\\theta & -\\sin\\theta \\\\
-\\sin\\theta & \\cos\\theta
-\\end{pmatrix}
-\\begin{pmatrix}
-x \\\\
-y
-\\end{pmatrix}
-=
-\\begin{pmatrix}
-x' \\\\
-y'
-\\end{pmatrix}
-$$
+### 二项式定理
+$\displaystyle(x + y)^n = \sum_{k=0}^{n} \binom{n}{k} x^{n-k} y^k$
+
+### 欧拉公式
+$e^{i\theta} = \cos\theta + i\sin\theta$
 
 ---
 
