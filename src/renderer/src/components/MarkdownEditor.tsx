@@ -19,7 +19,28 @@ import mermaid from 'mermaid'
 import { common, createLowlight } from 'lowlight'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { TextSelection } from '@tiptap/pm/state'
-import type { AiSelection, MarkdownMode } from '@shared/types'
+import {
+  Bold,
+  Code,
+  Copy,
+  ExternalLink,
+  Heading1,
+  Heading2,
+  Image as ImageIcon,
+  Italic,
+  Link,
+  Maximize2,
+  Redo2,
+  Scissors,
+  Sparkles,
+  Table as TableIcon,
+  Trash2,
+  Undo2,
+  Unlink,
+  Workflow,
+} from 'lucide-react'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import type { AiOperation, AiSelection, MarkdownMode } from '@shared/types'
 import { markdownForEditor, markdownFromEditor } from '@renderer/utils/markdown'
 
 mermaid.initialize({
@@ -105,6 +126,7 @@ type MarkdownEditorProps = {
   onDropImage: (sourcePath: string) => void
   onOpenPreview: (preview: EditorPreview) => void
   onNavigateLink?: (href: string) => void
+  onTriggerAiAction?: (operation: AiOperation, selectedText: string) => void
 }
 
 function selectSourceLine(source: HTMLTextAreaElement, line: number) {
@@ -129,6 +151,56 @@ async function copyText(text: string) {
   temporary.select()
   document.execCommand('copy')
   temporary.remove()
+}
+
+function formatLanguage(rawLang?: string): string {
+  const lang = rawLang?.trim().toLowerCase()
+  if (!lang) return 'Text'
+  switch (lang) {
+    case 'py':
+    case 'python':
+      return 'Python'
+    case 'js':
+    case 'javascript':
+    case 'node':
+      return 'JavaScript'
+    case 'ts':
+    case 'typescript':
+      return 'TypeScript'
+    case 'sh':
+    case 'bash':
+    case 'shell':
+      return 'Bash'
+    case 'ps1':
+    case 'powershell':
+      return 'PowerShell'
+    case 'go':
+    case 'golang':
+      return 'Go'
+    case 'rs':
+    case 'rust':
+      return 'Rust'
+    case 'java':
+      return 'Java'
+    case 'cpp':
+    case 'c++':
+      return 'C++'
+    case 'c':
+      return 'C'
+    case 'html':
+      return 'HTML'
+    case 'css':
+      return 'CSS'
+    case 'json':
+      return 'JSON'
+    case 'sql':
+      return 'SQL'
+    case 'md':
+    case 'markdown':
+      return 'Markdown'
+    default:
+      return lang.charAt(0).toUpperCase() + lang.slice(1)
+  }
 }
 
 let mermaidDiagramId = 0
@@ -244,10 +316,10 @@ function createMermaidNodeView(node: ProseMirrorNode, onOpenPreview?: (preview: 
 }
 
 const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(function MarkdownEditor(
-  { markdown, mode, workspaceRoot, onMarkdownChange, onSourceChange, onCursorChange, onDropImage, onOpenPreview, onNavigateLink },
+  { markdown, mode, workspaceRoot, onMarkdownChange, onSourceChange, onCursorChange, onDropImage, onOpenPreview, onNavigateLink, onTriggerAiAction },
   ref,
 ) {
-  const [tableMenu, setTableMenu] = useState<{ x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
   const sourceRef = useRef<HTMLTextAreaElement>(null)
   const sourceGutterRef = useRef<HTMLDivElement>(null)
   const cursorFrameRef = useRef<number | null>(null)
@@ -257,12 +329,14 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
   const onDropImageRef = useRef(onDropImage)
   const onOpenPreviewRef = useRef(onOpenPreview)
   const onNavigateLinkRef = useRef(onNavigateLink)
+  const onTriggerAiActionRef = useRef(onTriggerAiAction)
   const workspaceRootRef = useRef(workspaceRoot)
   onMarkdownChangeRef.current = onMarkdownChange
   onSourceChangeRef.current = onSourceChange
   onDropImageRef.current = onDropImage
   onOpenPreviewRef.current = onOpenPreview
   onNavigateLinkRef.current = onNavigateLink
+  onTriggerAiActionRef.current = onTriggerAiAction
   workspaceRootRef.current = workspaceRoot
 
   const lowlight = useMemo(() => createLowlight(common), [])
@@ -278,35 +352,275 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
             return createMermaidNodeView(node, (previewData) => onOpenPreviewRef.current(previewData))
           }
 
-          const dom = document.createElement('pre')
-          const gutter = document.createElement('div')
-          const code = document.createElement('code')
-          const copyButton = document.createElement('button')
+          let currentNode = node
+          let renderedNode = node
+          let isRunning = false
+          let currentExecutionId: string | null = null
 
+          const dom = document.createElement('div')
+          dom.className = 'code-block-wrapper'
+
+          const pre = document.createElement('pre')
+
+          const gutter = document.createElement('div')
           gutter.className = 'code-line-numbers'
           gutter.setAttribute('aria-hidden', 'true')
           gutter.setAttribute('contenteditable', 'false')
+
+          const code = document.createElement('code')
           code.className = node.attrs.language ? `language-${node.attrs.language}` : ''
           code.setAttribute('spellcheck', 'false')
+
+          const toolbar = document.createElement('div')
+          toolbar.className = 'code-block-toolbar'
+          toolbar.setAttribute('contenteditable', 'false')
+
+          const langBadge = document.createElement('span')
+          langBadge.className = 'code-lang-badge'
+          langBadge.textContent = formatLanguage(node.attrs.language)
+
+          const runButton = document.createElement('button')
+          runButton.type = 'button'
+          runButton.className = 'code-action-button code-run-btn'
+          runButton.setAttribute('contenteditable', 'false')
+          runButton.textContent = '▶ 运行'
+
+          const copyButton = document.createElement('button')
           copyButton.type = 'button'
-          copyButton.className = 'code-copy-button'
+          copyButton.className = 'code-action-button code-copy-button'
           copyButton.setAttribute('aria-label', '复制代码')
           copyButton.setAttribute('contenteditable', 'false')
-          copyButton.textContent = '复制'
+          copyButton.textContent = '📋 复制'
           copyButton.addEventListener('mousedown', (event) => event.preventDefault())
           copyButton.addEventListener('click', (event) => {
             event.preventDefault()
             event.stopPropagation()
             void copyText(code.textContent ?? '').then(() => {
               copyButton.textContent = '已复制'
-              window.setTimeout(() => { copyButton.textContent = '复制' }, 1200)
+              window.setTimeout(() => { copyButton.textContent = '📋 复制' }, 1200)
             }).catch(() => {
               copyButton.textContent = '复制失败'
-              window.setTimeout(() => { copyButton.textContent = '复制' }, 1200)
+              window.setTimeout(() => { copyButton.textContent = '📋 复制' }, 1200)
             })
           })
 
-          let renderedNode = node
+          toolbar.append(langBadge, runButton, copyButton)
+          pre.append(gutter, code, toolbar)
+
+          const outputPanel = document.createElement('div')
+          outputPanel.className = 'code-block-output'
+          outputPanel.setAttribute('contenteditable', 'false')
+
+          const outputHeader = document.createElement('div')
+          outputHeader.className = 'code-output-header'
+          outputHeader.setAttribute('contenteditable', 'false')
+
+          const headerMeta = document.createElement('div')
+          headerMeta.style.display = 'flex'
+          headerMeta.style.alignItems = 'center'
+          headerMeta.style.gap = '8px'
+
+          const statusBadge = document.createElement('span')
+          statusBadge.className = 'code-output-status'
+
+          const durationBadge = document.createElement('span')
+          durationBadge.className = 'code-output-duration'
+
+          headerMeta.append(statusBadge, durationBadge)
+
+          const headerActions = document.createElement('div')
+          headerActions.style.display = 'flex'
+          headerActions.style.alignItems = 'center'
+          headerActions.style.gap = '4px'
+
+          const collapseBtn = document.createElement('button')
+          collapseBtn.type = 'button'
+          collapseBtn.className = 'code-output-btn'
+          collapseBtn.setAttribute('contenteditable', 'false')
+          collapseBtn.textContent = '折叠'
+          collapseBtn.addEventListener('mousedown', (e) => e.preventDefault())
+          collapseBtn.addEventListener('click', (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            const isCollapsed = outputBody.classList.toggle('is-collapsed')
+            collapseBtn.textContent = isCollapsed ? '展开' : '折叠'
+          })
+
+          const clearBtn = document.createElement('button')
+          clearBtn.type = 'button'
+          clearBtn.className = 'code-output-btn'
+          clearBtn.setAttribute('contenteditable', 'false')
+          clearBtn.textContent = '清空'
+          clearBtn.addEventListener('mousedown', (e) => e.preventDefault())
+          clearBtn.addEventListener('click', (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            if (isRunning && currentExecutionId) {
+              if (window.desktop?.cancelExecution) {
+                void window.desktop.cancelExecution(currentExecutionId)
+              }
+              isRunning = false
+              currentExecutionId = null
+              runButton.textContent = '▶ 运行'
+              runButton.classList.remove('is-running', 'code-stop-btn')
+            }
+            outputPanel.remove()
+            dom.classList.remove('has-output')
+            outputBody.replaceChildren()
+            statusBadge.textContent = ''
+            statusBadge.className = 'code-output-status'
+            durationBadge.textContent = ''
+          })
+
+          headerActions.append(collapseBtn, clearBtn)
+          outputHeader.append(headerMeta, headerActions)
+
+          const outputBody = document.createElement('div')
+          outputBody.className = 'code-output-body'
+          outputBody.setAttribute('contenteditable', 'false')
+
+          outputPanel.append(outputHeader, outputBody)
+          dom.append(pre)
+
+          const runCode = async () => {
+            if (isRunning) return
+            isRunning = true
+            const executionId = 'exec-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)
+            currentExecutionId = executionId
+
+            runButton.textContent = '⏹ 终止'
+            runButton.classList.add('is-running', 'code-stop-btn')
+
+            if (!dom.contains(outputPanel)) {
+              dom.append(outputPanel)
+            }
+            dom.classList.add('has-output')
+            outputBody.classList.remove('is-collapsed')
+            collapseBtn.textContent = '折叠'
+
+            statusBadge.textContent = '运行中...'
+            statusBadge.className = 'code-output-status is-running'
+            durationBadge.textContent = ''
+            outputBody.replaceChildren()
+
+            if (!window.desktop?.executeCode) {
+              isRunning = false
+              currentExecutionId = null
+              runButton.textContent = '▶ 运行'
+              runButton.classList.remove('is-running', 'code-stop-btn')
+              statusBadge.textContent = '失败 (1)'
+              statusBadge.className = 'code-output-status is-error'
+              const errEl = document.createElement('div')
+              errEl.className = 'code-output-stderr'
+              errEl.textContent = '代码执行服务不可用'
+              outputBody.append(errEl)
+              return
+            }
+
+            try {
+              const result = await window.desktop.executeCode({
+                executionId,
+                language: currentNode.attrs.language || 'text',
+                code: code.textContent ?? '',
+                workingDirectory: workspaceRootRef.current || undefined,
+              })
+
+              if (currentExecutionId !== executionId) {
+                return
+              }
+
+              isRunning = false
+              currentExecutionId = null
+              runButton.textContent = '▶ 运行'
+              runButton.classList.remove('is-running', 'code-stop-btn')
+
+              if (result.timedOut) {
+                statusBadge.textContent = '超时 (15s)'
+                statusBadge.className = 'code-output-status is-timeout'
+              } else if (result.exitCode === 0) {
+                statusBadge.textContent = '成功 (0)'
+                statusBadge.className = 'code-output-status is-success'
+              } else {
+                statusBadge.textContent = `失败 (${result.exitCode ?? 1})`
+                statusBadge.className = 'code-output-status is-error'
+              }
+
+              durationBadge.textContent = `${result.durationMs}ms`
+
+              outputBody.replaceChildren()
+              if (result.stdout) {
+                const stdoutEl = document.createElement('div')
+                stdoutEl.className = 'code-output-stdout'
+                stdoutEl.textContent = result.stdout
+                outputBody.append(stdoutEl)
+              }
+              if (result.stderr) {
+                const stderrEl = document.createElement('div')
+                stderrEl.className = 'code-output-stderr'
+                stderrEl.textContent = result.stderr
+                outputBody.append(stderrEl)
+              }
+              if (result.error && !result.stdout && !result.stderr) {
+                const errorEl = document.createElement('div')
+                errorEl.className = 'code-output-stderr'
+                errorEl.textContent = result.error
+                outputBody.append(errorEl)
+              }
+              if (!result.stdout && !result.stderr && !result.error) {
+                const emptyEl = document.createElement('div')
+                emptyEl.className = 'code-output-stdout'
+                emptyEl.style.opacity = '0.6'
+                emptyEl.textContent = '(执行完成，无输出)'
+                outputBody.append(emptyEl)
+              }
+            } catch (error) {
+              if (currentExecutionId !== executionId) {
+                return
+              }
+              isRunning = false
+              currentExecutionId = null
+              runButton.textContent = '▶ 运行'
+              runButton.classList.remove('is-running', 'code-stop-btn')
+
+              statusBadge.textContent = '失败 (1)'
+              statusBadge.className = 'code-output-status is-error'
+              durationBadge.textContent = ''
+
+              outputBody.replaceChildren()
+              const errEl = document.createElement('div')
+              errEl.className = 'code-output-stderr'
+              errEl.textContent = error instanceof Error ? error.message : String(error)
+              outputBody.append(errEl)
+            }
+          }
+
+          runButton.addEventListener('mousedown', (event) => event.preventDefault())
+          runButton.addEventListener('click', (event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            if (isRunning) {
+              const idToCancel = currentExecutionId
+              isRunning = false
+              currentExecutionId = null
+              runButton.textContent = '▶ 运行'
+              runButton.classList.remove('is-running', 'code-stop-btn')
+              statusBadge.textContent = '已终止'
+              statusBadge.className = 'code-output-status is-error'
+              if (idToCancel && window.desktop?.cancelExecution) {
+                void window.desktop.cancelExecution(idToCancel)
+              }
+              return
+            }
+            void runCode()
+          })
+
+          code.addEventListener('keydown', (event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+              event.preventDefault()
+              event.stopPropagation()
+              void runCode()
+            }
+          })
 
           const updateLineNumbers = (currentNode: typeof node) => {
             const lines = currentNode.textContent.split(/\r?\n/)
@@ -320,7 +634,6 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
           }
 
           updateLineNumbers(node)
-          dom.append(gutter, code, copyButton)
 
           return {
             dom,
@@ -328,6 +641,8 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
             update: (nextNode: typeof node) => {
               if (nextNode.type !== node.type) return false
               if (nextNode.attrs.language?.trim().toLowerCase() === 'mermaid') return false
+              currentNode = nextNode
+              langBadge.textContent = formatLanguage(nextNode.attrs.language)
               if (nextNode.eq(renderedNode)) return true
               renderedNode = nextNode
               updateLineNumbers(nextNode)
@@ -336,6 +651,13 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
             ignoreMutation: (mutation: MutationRecord) => {
               if (mutation.type === 'selection') return false
               return !code.contains(mutation.target)
+            },
+            destroy: () => {
+              if (isRunning && currentExecutionId) {
+                if (window.desktop?.cancelExecution) {
+                  void window.desktop.cancelExecution(currentExecutionId)
+                }
+              }
             },
           }
         }
@@ -404,15 +726,309 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
           return false
         },
         contextmenu: (view, event) => {
+          event.preventDefault()
           const target = event.target
           if (!(target instanceof Element)) return false
-          const cell = target.closest('td, th')
-          if (!(cell instanceof HTMLElement)) return false
 
-          const position = Math.min(view.posAtDOM(cell, 0) + 1, view.state.doc.content.size)
-          view.dispatch(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(position))))
-          event.preventDefault()
-          setTableMenu({ x: event.clientX, y: event.clientY })
+          const { from, to, empty } = view.state.selection
+          const selectedText = empty ? '' : view.state.doc.textBetween(from, to, ' ')
+          const cell = target.closest('td, th')
+          const link = target.closest('a')
+          const img = target.closest('img')
+          const diagram = target.closest('[data-diagram="mermaid"]')
+
+          const items: ContextMenuItem[] = []
+
+          // 1. 文本选中状态：AI 创作与格式化
+          if (selectedText.trim()) {
+            items.push(
+              { type: 'header', label: 'AI 智能创作', icon: <Sparkles size={14} /> },
+              {
+                id: 'ai-polish',
+                label: 'AI 润色优化',
+                icon: <Sparkles size={14} />,
+                onClick: () => onTriggerAiActionRef.current?.('polish', selectedText),
+              },
+              {
+                id: 'ai-expand',
+                label: 'AI 扩写丰富',
+                icon: <Sparkles size={14} />,
+                onClick: () => onTriggerAiActionRef.current?.('expand', selectedText),
+              },
+              {
+                id: 'ai-shorten',
+                label: '精简摘要',
+                icon: <Sparkles size={14} />,
+                onClick: () => onTriggerAiActionRef.current?.('shorten', selectedText),
+              },
+              {
+                id: 'ai-translate',
+                label: '中英双向翻译',
+                icon: <Sparkles size={14} />,
+                onClick: () => onTriggerAiActionRef.current?.('translate', selectedText),
+              },
+              {
+                id: 'ai-proofread',
+                label: '错别字与语法纠错',
+                icon: <Sparkles size={14} />,
+                onClick: () => onTriggerAiActionRef.current?.('proofread', selectedText),
+              },
+              {
+                id: 'ai-qa',
+                label: '向 AI 提问此内容…',
+                icon: <Sparkles size={14} />,
+                onClick: () => onTriggerAiActionRef.current?.('qa', selectedText),
+              },
+              { type: 'separator' },
+              {
+                id: 'cut',
+                label: '剪切',
+                icon: <Scissors size={14} />,
+                shortcut: 'Ctrl+X',
+                onClick: () => {
+                  void copyText(selectedText)
+                  view.dispatch(view.state.tr.deleteSelection())
+                },
+              },
+              {
+                id: 'copy',
+                label: '复制',
+                icon: <Copy size={14} />,
+                shortcut: 'Ctrl+C',
+                onClick: () => void copyText(selectedText),
+              },
+              { type: 'separator' },
+              {
+                id: 'bold',
+                label: '加粗',
+                icon: <Bold size={14} />,
+                shortcut: 'Ctrl+B',
+                onClick: () => editor?.chain().focus().toggleBold().run(),
+              },
+              {
+                id: 'italic',
+                label: '斜体',
+                icon: <Italic size={14} />,
+                shortcut: 'Ctrl+I',
+                onClick: () => editor?.chain().focus().toggleItalic().run(),
+              },
+              {
+                id: 'code',
+                label: '行内代码',
+                icon: <Code size={14} />,
+                shortcut: 'Ctrl+E',
+                onClick: () => editor?.chain().focus().toggleCode().run(),
+              },
+              {
+                id: 'h1',
+                label: '设为一级标题',
+                icon: <Heading1 size={14} />,
+                shortcut: 'Ctrl+Alt+1',
+                onClick: () => editor?.chain().focus().toggleHeading({ level: 1 }).run(),
+              },
+              {
+                id: 'h2',
+                label: '设为二级标题',
+                icon: <Heading2 size={14} />,
+                shortcut: 'Ctrl+Alt+2',
+                onClick: () => editor?.chain().focus().toggleHeading({ level: 2 }).run(),
+              },
+            )
+          } else if (cell instanceof HTMLElement) {
+            // 2. 表格单元格上下文
+            const position = Math.min(view.posAtDOM(cell, 0) + 1, view.state.doc.content.size)
+            view.dispatch(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(position))))
+
+            items.push(
+              { type: 'header', label: '表格操作', icon: <TableIcon size={14} /> },
+              {
+                id: 'table-add-row-before',
+                label: '上方插入行',
+                onClick: () => editor?.chain().focus().addRowBefore().run(),
+              },
+              {
+                id: 'table-add-row-after',
+                label: '下方插入行',
+                onClick: () => editor?.chain().focus().addRowAfter().run(),
+              },
+              {
+                id: 'table-del-row',
+                label: '删除当前行',
+                onClick: () => editor?.chain().focus().deleteRow().run(),
+              },
+              { type: 'separator' },
+              {
+                id: 'table-add-col-before',
+                label: '左侧插入列',
+                onClick: () => editor?.chain().focus().addColumnBefore().run(),
+              },
+              {
+                id: 'table-add-col-after',
+                label: '右侧插入列',
+                onClick: () => editor?.chain().focus().addColumnAfter().run(),
+              },
+              {
+                id: 'table-del-col',
+                label: '删除当前列',
+                onClick: () => editor?.chain().focus().deleteColumn().run(),
+              },
+              { type: 'separator' },
+              {
+                id: 'table-merge',
+                label: '合并/拆分单元格',
+                onClick: () => {
+                  if (editor?.can().mergeCells()) editor.chain().focus().mergeCells().run()
+                  else editor?.chain().focus().splitCell().run()
+                },
+              },
+              {
+                id: 'table-header',
+                label: '切换标题行',
+                onClick: () => editor?.chain().focus().toggleHeaderRow().run(),
+              },
+              { type: 'separator' },
+              {
+                id: 'table-delete',
+                label: '删除表格',
+                icon: <Trash2 size={14} />,
+                danger: true,
+                onClick: () => editor?.chain().focus().deleteTable().run(),
+              },
+            )
+          } else if (link instanceof HTMLAnchorElement) {
+            // 3. 超链接上下文
+            const href = link.getAttribute('href') || ''
+            items.push(
+              { type: 'header', label: '超链接', icon: <Link size={14} /> },
+              {
+                id: 'open-link',
+                label: '打开链接',
+                icon: <ExternalLink size={14} />,
+                onClick: () => onNavigateLinkRef.current?.(href),
+              },
+              {
+                id: 'copy-link',
+                label: '复制链接地址',
+                icon: <Copy size={14} />,
+                onClick: () => void copyText(href),
+              },
+              {
+                id: 'remove-link',
+                label: '取消超链接',
+                icon: <Unlink size={14} />,
+                onClick: () => editor?.chain().focus().unsetLink().run(),
+              },
+            )
+          } else if (img instanceof HTMLImageElement) {
+            // 4. 图片上下文
+            const src = img.currentSrc || img.src
+            const alt = img.alt || '图片'
+            items.push(
+              { type: 'header', label: '图片', icon: <ImageIcon size={14} /> },
+              {
+                id: 'preview-image',
+                label: '查看大图',
+                icon: <Maximize2 size={14} />,
+                onClick: () => onOpenPreviewRef.current({ kind: 'image', src, alt }),
+              },
+              {
+                id: 'copy-image-md',
+                label: '复制图片 Markdown 引用',
+                icon: <Copy size={14} />,
+                onClick: () => void copyText(`![${alt}](${img.getAttribute('src') || src})`),
+              },
+            )
+          } else if (diagram instanceof HTMLElement) {
+            // 5. 流程图上下文
+            const svg = diagram.querySelector('svg')
+            items.push(
+              { type: 'header', label: '流程图', icon: <Workflow size={14} /> },
+              ...(svg instanceof SVGElement ? [{
+                id: 'preview-diagram',
+                label: '全屏查看流程图',
+                icon: <Maximize2 size={14} />,
+                onClick: () => {
+                  const { markup, width, height } = prepareSvgForPreview(svg)
+                  onOpenPreviewRef.current({ kind: 'svg', markup, title: '流程图', width, height })
+                },
+              }] : []),
+            )
+          } else {
+            // 6. 普通光标处（插入与常用工具）
+            items.push(
+              {
+                id: 'paste',
+                label: '粘贴',
+                shortcut: 'Ctrl+V',
+                onClick: async () => {
+                  try {
+                    const text = await navigator.clipboard.readText()
+                    if (text) editor?.chain().focus().insertContent(text).run()
+                  } catch {
+                    // ignore
+                  }
+                },
+              },
+              { type: 'separator' },
+              { type: 'header', label: '快速插入' },
+              {
+                id: 'insert-table',
+                label: '插入表格 (3×3)',
+                icon: <TableIcon size={14} />,
+                onClick: () => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
+              },
+              {
+                id: 'insert-code',
+                label: '插入代码块',
+                icon: <Code size={14} />,
+                onClick: () => editor?.chain().focus().toggleCodeBlock().run(),
+              },
+              {
+                id: 'insert-mermaid',
+                label: '插入流程图 (Mermaid)',
+                icon: <Workflow size={14} />,
+                onClick: () => editor?.chain().focus().insertContent('\n```mermaid\ngraph TD\n  A[开始] --> B(处理步骤)\n  B --> C{是否完成}\n  C -->|是| D[结束]\n  C -->|否| B\n```\n').run(),
+              },
+              {
+                id: 'insert-math',
+                label: '插入数学公式 (KaTeX)',
+                onClick: () => editor?.chain().focus().insertContent('$$\nE = mc^2\n$$\n').run(),
+              },
+              {
+                id: 'insert-hr',
+                label: '插入分割线',
+                onClick: () => editor?.chain().focus().setHorizontalRule().run(),
+              },
+              {
+                id: 'insert-quote',
+                label: '插入引用块',
+                onClick: () => editor?.chain().focus().toggleBlockquote().run(),
+              },
+              { type: 'separator' },
+              {
+                id: 'undo',
+                label: '撤销',
+                icon: <Undo2 size={14} />,
+                shortcut: 'Ctrl+Z',
+                onClick: () => editor?.chain().focus().undo().run(),
+              },
+              {
+                id: 'redo',
+                label: '重做',
+                icon: <Redo2 size={14} />,
+                shortcut: 'Ctrl+Y',
+                onClick: () => editor?.chain().focus().redo().run(),
+              },
+              {
+                id: 'select-all',
+                label: '全选',
+                shortcut: 'Ctrl+A',
+                onClick: () => editor?.chain().focus().selectAll().run(),
+              },
+            )
+          }
+
+          setContextMenu({ x: event.clientX, y: event.clientY, items })
           return true
         },
         drop: (_view, event) => {
@@ -453,11 +1069,11 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
   }, [])
 
   useEffect(() => {
-    if (mode === 'source') setTableMenu(null)
+    if (mode === 'source') setContextMenu(null)
   }, [mode])
 
   useEffect(() => {
-    const closeMenu = () => setTableMenu(null)
+    const closeMenu = () => setContextMenu(null)
     window.addEventListener('resize', closeMenu)
     window.addEventListener('scroll', closeMenu, true)
     return () => {
@@ -605,11 +1221,6 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
     },
   }), [editor, mode, workspaceRoot])
 
-  const runTableAction = (action: () => boolean | undefined) => {
-    action()
-    setTableMenu(null)
-  }
-
   if (mode === 'source') {
     const lineCount = Math.max(1, markdown.split(/\r?\n/).length)
     return (
@@ -642,31 +1253,13 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
   return (
     <div className="editor-content-wrap">
       <EditorContent editor={editor} />
-      {tableMenu && (
-        <div
-          className="table-context-menu"
-          role="menu"
-          aria-label="表格操作"
-          style={{ left: Math.max(8, Math.min(tableMenu.x, window.innerWidth - 220)), top: Math.max(8, Math.min(tableMenu.y, window.innerHeight - 370)) }}
-          onMouseDown={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-          }}
-        >
-          <button type="button" role="menuitem" onClick={() => runTableAction(() => editor?.chain().focus().addRowBefore().run())}>上方插入行</button>
-          <button type="button" role="menuitem" onClick={() => runTableAction(() => editor?.chain().focus().addRowAfter().run())}>下方插入行</button>
-          <button type="button" role="menuitem" onClick={() => runTableAction(() => editor?.chain().focus().deleteRow().run())}>删除当前行</button>
-          <div className="table-menu-separator" role="separator" />
-          <button type="button" role="menuitem" onClick={() => runTableAction(() => editor?.chain().focus().addColumnBefore().run())}>左侧插入列</button>
-          <button type="button" role="menuitem" onClick={() => runTableAction(() => editor?.chain().focus().addColumnAfter().run())}>右侧插入列</button>
-          <button type="button" role="menuitem" onClick={() => runTableAction(() => editor?.chain().focus().deleteColumn().run())}>删除当前列</button>
-          <div className="table-menu-separator" role="separator" />
-          <button type="button" role="menuitem" onClick={() => runTableAction(() => editor?.chain().focus().mergeCells().run())}>合并单元格</button>
-          <button type="button" role="menuitem" onClick={() => runTableAction(() => editor?.chain().focus().splitCell().run())}>拆分单元格</button>
-          <button type="button" role="menuitem" onClick={() => runTableAction(() => editor?.chain().focus().toggleHeaderRow().run())}>切换标题行</button>
-          <div className="table-menu-separator" role="separator" />
-          <button type="button" role="menuitem" className="is-danger" onClick={() => runTableAction(() => editor?.chain().focus().deleteTable().run())}>删除表格</button>
-        </div>
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={contextMenu.items}
+          onClose={() => setContextMenu(null)}
+        />
       )}
     </div>
   )
