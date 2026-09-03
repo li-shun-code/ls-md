@@ -5,9 +5,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   copyImageAsset,
+  createDirectory,
+  createMarkdownFile,
   isMarkdownPath,
   listWorkspace,
   readMarkdown,
+  renameNode,
   resolveLinkedDocument,
   writeMarkdown,
 } from './file-service'
@@ -15,7 +18,17 @@ import { AiService } from './ai-service'
 import { buildApplicationMenu } from './menu'
 import { RecentService } from './recent-service'
 import { RecoveryService } from './recovery-service'
-import type { AiRequest, AiSettingsInput, OpenedDocument, RecoverySnapshot, WorkspaceSelection } from '../shared/types'
+import { SettingsService } from './settings-service'
+import { RunnerService } from './runner-service'
+import type {
+  AiRequest,
+  AiSettingsInput,
+  AppSettings,
+  ExecutionRequest,
+  OpenedDocument,
+  RecoverySnapshot,
+  WorkspaceSelection,
+} from '../shared/types'
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url))
 const isPrimaryInstance = app.requestSingleInstanceLock()
@@ -24,6 +37,8 @@ let workspaceRoot: string | null = null
 let recoveryService: RecoveryService
 let recentService: RecentService
 let aiService: AiService
+let settingsService: SettingsService
+let runnerService: RunnerService
 let watchedFile: string | null = null
 let fileWatcher: FSWatcher | null = null
 let pendingOpenPath: string | null = findMarkdownArgument(process.argv)
@@ -48,18 +63,80 @@ function isTrustedSender(sender: Electron.WebContents): boolean {
   return mainWindow !== null && sender === mainWindow.webContents
 }
 
+let workspaceWatcher: FSWatcher | null = null
+let workspaceDebounceTimer: NodeJS.Timeout | null = null
+let lastSelfWriteTime = 0
+let lastSelfWritePath = ''
+let documentDebounceTimer: NodeJS.Timeout | null = null
+
 function watchDocument(filePath: string): void {
   fileWatcher?.close()
+  if (documentDebounceTimer) clearTimeout(documentDebounceTimer)
   const resolvedPath = path.resolve(filePath)
   watchedFile = resolvedPath
   fileWatcher = watch(watchedFile, { persistent: false }, () => {
-    if (mainWindow && watchedFile) mainWindow.webContents.send('file-changed', watchedFile)
+    if (documentDebounceTimer) clearTimeout(documentDebounceTimer)
+    documentDebounceTimer = setTimeout(() => {
+      // 避免自身保存操作引发的虚假外部更新广播
+      if (resolvedPath === lastSelfWritePath && Date.now() - lastSelfWriteTime < 1200) {
+        return
+      }
+      if (mainWindow && watchedFile === resolvedPath) {
+        mainWindow.webContents.send('file-changed', watchedFile)
+      }
+    }, 200)
+
     setTimeout(() => {
       if (watchedFile === resolvedPath) {
         try { watchDocument(resolvedPath) } catch { /* 文件可能已被删除 */ }
       }
     }, 250)
   })
+}
+
+function watchWorkspace(root: string): void {
+  workspaceWatcher?.close()
+  workspaceWatcher = null
+  if (!root) return
+
+  try {
+    workspaceWatcher = watch(root, { recursive: true, persistent: false }, (_eventType, filename) => {
+      if (filename && (
+        filename.includes('.git') ||
+        filename.includes('node_modules') ||
+        filename.includes('.markdown-desk') ||
+        filename.endsWith('.tmp') ||
+        filename.endsWith('~')
+      )) {
+        return
+      }
+
+      if (workspaceDebounceTimer) clearTimeout(workspaceDebounceTimer)
+      workspaceDebounceTimer = setTimeout(async () => {
+        if (!mainWindow || !workspaceRoot) return
+        try {
+          const tree = await listWorkspace(workspaceRoot)
+          sendWorkspaceSelection(tree)
+        } catch {
+          // ignore transient scan errors
+        }
+      }, 300)
+    })
+  } catch (err) {
+    console.warn('Failed to watch workspace:', err)
+  }
+}
+
+function setAndWatchWorkspace(root: string | null): void {
+  if (!root) {
+    workspaceRoot = null
+    workspaceWatcher?.close()
+    workspaceWatcher = null
+    return
+  }
+  const resolved = path.resolve(root)
+  workspaceRoot = resolved
+  watchWorkspace(resolved)
 }
 
 function sendWorkspaceSelection(tree: WorkspaceSelection['tree']): void {
@@ -81,9 +158,11 @@ async function chooseWorkspace(): Promise<string | null> {
     return null
   }
 
-  workspaceRoot = path.resolve(result.filePaths[0])
-  const tree = await listWorkspace(workspaceRoot)
-  sendWorkspaceSelection(tree)
+  setAndWatchWorkspace(result.filePaths[0])
+  if (workspaceRoot) {
+    const tree = await listWorkspace(workspaceRoot)
+    sendWorkspaceSelection(tree)
+  }
   return workspaceRoot
 }
 
@@ -130,20 +209,24 @@ async function openMarkdownFile(filePath: string): Promise<void> {
   }
 
   const resolvedPath = path.resolve(filePath)
-  workspaceRoot = path.dirname(resolvedPath)
+  if (!workspaceRoot || !resolvedPath.toLowerCase().startsWith(workspaceRoot.toLowerCase())) {
+    setAndWatchWorkspace(path.dirname(resolvedPath))
+  }
   try {
-    const content = await readMarkdown(workspaceRoot, resolvedPath)
+    const content = await readMarkdown(workspaceRoot || path.dirname(resolvedPath), resolvedPath)
     watchDocument(resolvedPath)
     mainWindow.webContents.send('document-opened', { path: resolvedPath, content } satisfies OpenedDocument)
     if (recentService) {
       await recentService.addRecentFile(resolvedPath)
       await updateApplicationMenu()
     }
-    try {
-      const tree = await listWorkspace(workspaceRoot)
-      sendWorkspaceSelection(tree)
-    } catch {
-      // 工作区目录扫描失败时（如系统临时目录权限限制），不影响当前文档正常打开
+    if (workspaceRoot) {
+      try {
+        const tree = await listWorkspace(workspaceRoot)
+        sendWorkspaceSelection(tree)
+      } catch {
+        // 工作区目录扫描失败时（如系统临时目录权限限制），不影响当前文档正常打开
+      }
     }
   } catch (error) {
     if (recentService) {
@@ -182,6 +265,8 @@ async function createWindow(): Promise<void> {
     if (mainWindow !== window) return
     fileWatcher?.close()
     fileWatcher = null
+    workspaceWatcher?.close()
+    workspaceWatcher = null
     watchedFile = null
     aiService?.cancelAll()
     mainWindow = null
@@ -191,6 +276,20 @@ async function createWindow(): Promise<void> {
   window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (isMainFrame) {
       console.error(`Renderer 加载失败 (${errorCode}): ${errorDescription} - ${validatedURL}`)
+    }
+  })
+  window.webContents.on('render-process-gone', (_event, details) => {
+    console.error('Renderer process gone:', details)
+    if (details.reason !== 'clean-exit' && mainWindow && !mainWindow.isDestroyed()) {
+      dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: '编辑窗口异常中断',
+        message: `编辑器渲染进程异常终止 (${details.reason})，即将自动重新加载以恢复编辑区。`,
+      }).then(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.reload()
+        }
+      }).catch(() => undefined)
     }
   })
 
@@ -209,8 +308,68 @@ function registerIpc(): void {
 
   ipcMain.handle('workspace:list', async (event, root: string) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
-    workspaceRoot = path.resolve(root)
+    setAndWatchWorkspace(root)
+    if (!workspaceRoot) return []
     return listWorkspace(workspaceRoot)
+  })
+
+  ipcMain.handle('file:show-in-folder', async (event, filePath: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    shell.showItemInFolder(path.resolve(filePath))
+  })
+
+  ipcMain.handle('file:rename', async (event, oldPath: string, newName: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const resolvedOld = path.resolve(oldPath)
+    const resolvedNew = await renameNode(resolvedOld, newName)
+    if (watchedFile === resolvedOld) {
+      watchDocument(resolvedNew)
+    }
+    if (recentService) {
+      await recentService.removeRecentFile(resolvedOld)
+      await recentService.addRecentFile(resolvedNew)
+      await updateApplicationMenu()
+    }
+    if (workspaceRoot) {
+      const tree = await listWorkspace(workspaceRoot)
+      sendWorkspaceSelection(tree)
+    }
+    return resolvedNew
+  })
+
+  ipcMain.handle('file:trash', async (event, filePath: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const resolved = path.resolve(filePath)
+    await shell.trashItem(resolved)
+    if (recentService) {
+      await recentService.removeRecentFile(resolved)
+      await updateApplicationMenu()
+    }
+    if (workspaceRoot) {
+      const tree = await listWorkspace(workspaceRoot)
+      sendWorkspaceSelection(tree)
+    }
+    return true
+  })
+
+  ipcMain.handle('file:create-file', async (event, directoryPath: string, fileName: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const created = await createMarkdownFile(directoryPath, fileName)
+    if (workspaceRoot) {
+      const tree = await listWorkspace(workspaceRoot)
+      sendWorkspaceSelection(tree)
+    }
+    return created
+  })
+
+  ipcMain.handle('file:create-folder', async (event, directoryPath: string, folderName: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const created = await createDirectory(directoryPath, folderName)
+    if (workspaceRoot) {
+      const tree = await listWorkspace(workspaceRoot)
+      sendWorkspaceSelection(tree)
+    }
+    return created
   })
 
   ipcMain.handle('file:open-dialog', async (event) => {
@@ -258,6 +417,8 @@ function registerIpc(): void {
     if (!workspaceRoot) {
       workspaceRoot = path.dirname(resolvedPath)
     }
+    lastSelfWritePath = resolvedPath
+    lastSelfWriteTime = Date.now()
     await writeMarkdown(workspaceRoot, resolvedPath, content)
     watchDocument(resolvedPath)
     if (recentService) {
@@ -276,6 +437,8 @@ function registerIpc(): void {
 
     const targetPath = path.resolve(isMarkdownPath(result.filePath) ? result.filePath : `${result.filePath}.md`)
     workspaceRoot = path.dirname(targetPath)
+    lastSelfWritePath = targetPath
+    lastSelfWriteTime = Date.now()
     await writeMarkdown(workspaceRoot, targetPath, content)
     watchDocument(targetPath)
     if (recentService) {
@@ -379,6 +542,56 @@ function registerIpc(): void {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
     await aiService.cancel(requestId)
   })
+
+  ipcMain.handle('settings:get', async (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return settingsService.getSettings()
+  })
+
+  ipcMain.handle('settings:update', async (event, partial: Partial<AppSettings>) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return settingsService.updateSettings(partial)
+  })
+
+  ipcMain.handle('runner:detect-env', async (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return runnerService.detectEnvironments()
+  })
+
+  ipcMain.handle('runner:execute', async (event, request: ExecutionRequest) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const settings = await settingsService.getSettings()
+    const lang = (request.language || '').toLowerCase().trim()
+    // match by id, language, or alias (e.g. py -> python, js -> javascript)
+    const runner =
+      settings.runners[lang] ||
+      Object.values(settings.runners).find(
+        (r) =>
+          r.language === lang ||
+          r.id === lang ||
+          (lang === 'js' && r.id === 'javascript') ||
+          (lang === 'py' && r.id === 'python') ||
+          (lang === 'ts' && r.id === 'typescript') ||
+          (lang === 'sh' && r.id === 'bash')
+      )
+    if (!runner || !runner.enabled) {
+      return {
+        executionId: request.executionId,
+        stdout: '',
+        stderr: `未找到语言 "${request.language}" 的已启用执行器，请在设置中配置。`,
+        exitCode: 1,
+        durationMs: 0,
+        timedOut: false,
+        error: 'Runner not found or disabled',
+      }
+    }
+    return runnerService.executeCode(request, runner)
+  })
+
+  ipcMain.handle('runner:cancel', async (event, executionId: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return runnerService.cancel(executionId)
+  })
 }
 
 app.whenReady().then(async () => {
@@ -387,6 +600,8 @@ app.whenReady().then(async () => {
     recoveryService = new RecoveryService(app.getPath('userData'))
     recentService = new RecentService(app.getPath('userData'), 20)
     aiService = new AiService(app.getPath('userData'))
+    settingsService = new SettingsService(app.getPath('userData'))
+    runnerService = new RunnerService()
     registerIpc()
     await createWindow()
     await updateApplicationMenu()

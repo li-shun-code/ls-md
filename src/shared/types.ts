@@ -168,6 +168,7 @@ export type MenuCommand =
   | 'theme.toggle'
   | 'help.shortcuts'
   | 'help.welcomeDocument'
+  | 'settings.open'
 
 export type DesktopBridge = {
   chooseWorkspace: () => Promise<string | null>

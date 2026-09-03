@@ -141,6 +141,16 @@ export function buildApplicationMenu(
         },
       ],
     },
+    {
+      label: '设置',
+      submenu: [
+        {
+          label: '首选项...',
+          accelerator: 'CmdOrCtrl+,',
+          click: () => sendCommand(getWindow(), 'settings.open'),
+        },
+      ],
+    },
   ]
 
   return Menu.buildFromTemplate(template)
