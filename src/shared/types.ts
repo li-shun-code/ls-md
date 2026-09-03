@@ -80,6 +80,40 @@ export type AiSettingsInput = {
   apiKey?: string
 }
 
+export type RunnerDefinition = {
+  id: string
+  name: string
+  language: string
+  extension: string
+  commandTemplate: string
+  enabled: boolean
+  detectedPath?: string
+  detectedVersion?: string
+}
+
+export type ExecutionRequest = {
+  executionId: string
+  language: string
+  code: string
+  documentPath?: string
+  workingDirectory?: string
+}
+
+export type ExecutionResult = {
+  executionId: string
+  stdout: string
+  stderr: string
+  exitCode: number | null
+  durationMs: number
+  timedOut: boolean
+  error?: string
+}
+
+export type AppSettings = {
+  runners: Record<string, RunnerDefinition>
+  ai: AiSettings
+}
+
 export type AiRequest = {
   requestId: string
   operation: AiOperation
@@ -156,9 +190,22 @@ export type DesktopBridge = {
   cancelAiRequest: (requestId: string) => Promise<void>
   resolvePath: (baseDir: string, targetPath: string) => Promise<string | null>
   openExternal: (url: string) => Promise<boolean>
+  showInFolder: (filePath: string) => Promise<void>
+  renameFile: (oldPath: string, newName: string) => Promise<string>
+  trashFile: (filePath: string) => Promise<boolean>
+  createFile: (directoryPath: string, fileName: string) => Promise<string>
+  createFolder: (directoryPath: string, folderName: string) => Promise<string>
+  getSettings: () => Promise<AppSettings>
+  updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>
+  detectEnvironments: () => Promise<Record<string, { available: boolean; path?: string; version?: string }>>
+  executeCode: (request: ExecutionRequest) => Promise<ExecutionResult>
+  cancelExecution: (executionId: string) => Promise<boolean>
   onAiStream: (callback: (event: AiStreamEvent) => void) => () => void
   onMenuCommand: (callback: (command: MenuCommand) => void) => () => void
   onWorkspaceSelected: (callback: (selection: WorkspaceSelection) => void) => () => void
   onDocumentOpened: (callback: (document: OpenedDocument) => void) => () => void
   onFileChanged: (callback: (path: string) => void) => () => void
 }
+
+export type DesktopApi = DesktopBridge
+
