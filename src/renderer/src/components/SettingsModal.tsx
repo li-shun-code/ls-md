@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -137,7 +137,7 @@ export function SettingsModal({
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState('')
 
-  const handleDetectEnvironments = async () => {
+  const handleDetectEnvironments = useCallback(async () => {
     setIsDetecting(true)
     try {
       const envs = await window.desktop.detectEnvironments()
@@ -147,7 +147,7 @@ export function SettingsModal({
     } finally {
       setIsDetecting(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -183,7 +183,7 @@ export function SettingsModal({
         console.error('Failed to load settings:', err)
       }
     })()
-  }, [open, initialTab])
+  }, [open, initialTab, handleDetectEnvironments])
 
   useEffect(() => {
     if (!open) return
