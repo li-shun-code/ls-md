@@ -8,6 +8,7 @@ import {
   isMarkdownPath,
   listWorkspace,
   readMarkdown,
+  resolveLinkedDocument,
   writeMarkdown,
 } from './file-service'
 import { AiService } from './ai-service'
@@ -220,6 +221,20 @@ function registerIpc(): void {
   ipcMain.handle('file:open-path', async (event, filePath: string) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
     await openMarkdownFile(filePath)
+  })
+
+  ipcMain.handle('file:resolve-path', async (event, baseDir: string, targetPath: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return resolveLinkedDocument(baseDir, targetPath, workspaceRoot)
+  })
+
+  ipcMain.handle('system:open-external', async (event, url: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    if (/^(?:https?|mailto):/i.test(url)) {
+      await shell.openExternal(url)
+      return true
+    }
+    return false
   })
 
   ipcMain.handle('file:read', async (event, filePath: string) => {

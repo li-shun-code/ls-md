@@ -1,6 +1,6 @@
 {
   "name": "markdown-desk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "墨笺：面向 Windows 与 macOS 的现代化 AI Markdown 编辑器。",
   "main": "./out/main/index.js",
   "author": "墨笺",

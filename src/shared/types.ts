@@ -154,6 +154,8 @@ export type DesktopBridge = {
   saveAiSettings: (settings: AiSettingsInput) => Promise<AiSettings>
   startAiRequest: (request: AiRequest) => Promise<string>
   cancelAiRequest: (requestId: string) => Promise<void>
+  resolvePath: (baseDir: string, targetPath: string) => Promise<string | null>
+  openExternal: (url: string) => Promise<boolean>
   onAiStream: (callback: (event: AiStreamEvent) => void) => () => void
   onMenuCommand: (callback: (command: MenuCommand) => void) => () => void
   onWorkspaceSelected: (callback: (selection: WorkspaceSelection) => void) => () => void

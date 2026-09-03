@@ -149,3 +149,23 @@ test('opens a Markdown file passed by Windows file association and remembers it'
     await unlink(documentPath).catch(() => undefined)
   }
 })
+
+test('navigates to linked markdown document when clicking markdown link', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'markdown-desk-links-'))
+  const docA = path.join(root, 'index.md')
+  const docB = path.join(root, 'detail.md')
+  await writeFile(docA, '# 首页\n\n查看 [详情页面](./detail.md)', 'utf8')
+  await writeFile(docB, '# 详情内容\n\n这是详情页。', 'utf8')
+
+  const { app, userDataPath } = await launchTestApp([docA])
+  try {
+    const page = await app.firstWindow()
+    await expect(page.locator('.tiptap-editor h1')).toHaveText('首页', { timeout: 15_000 })
+    await page.locator('.tiptap-editor a').click()
+    await expect(page.locator('.tiptap-editor h1')).toHaveText('详情内容', { timeout: 10_000 })
+  } finally {
+    await app.close()
+    await rm(userDataPath, { recursive: true, force: true })
+    await rm(root, { recursive: true, force: true })
+  }
+})

@@ -135,3 +135,76 @@ export async function copyImageAsset(sourcePath: string, workspaceRoot: string):
     }
   }
 }
+
+export async function resolveLinkedDocument(
+  baseDir: string,
+  targetPath: string,
+  root?: string | null
+): Promise<string | null> {
+  let cleanTarget = targetPath.trim().replace(/^file:\/\/\/?/i, '')
+  try {
+    cleanTarget = decodeURIComponent(cleanTarget)
+  } catch {
+    // ignore
+  }
+
+  const candidate = path.isAbsolute(cleanTarget)
+    ? path.resolve(cleanTarget)
+    : path.resolve(baseDir || root || '.', cleanTarget)
+
+  try {
+    const s = await stat(candidate)
+    if (s.isFile()) return candidate
+    if (s.isDirectory()) {
+      for (const indexName of ['README.md', 'index.md', 'readme.md']) {
+        const indexFile = path.join(candidate, indexName)
+        try {
+          if ((await stat(indexFile)).isFile()) return indexFile
+        } catch { /* ignore */ }
+      }
+    }
+  } catch {
+    // candidate does not exist directly
+  }
+
+  for (const ext of ['.md', '.markdown', '.mdown']) {
+    const withExt = candidate + ext
+    try {
+      if ((await stat(withExt)).isFile()) return withExt
+    } catch { /* ignore */ }
+  }
+
+  if (root) {
+    try {
+      const fileName = path.basename(candidate).toLowerCase()
+      const searchExts = fileName.endsWith('.md') || fileName.endsWith('.markdown')
+        ? [fileName]
+        : [`${fileName}.md`, `${fileName}.markdown`, fileName]
+
+      async function findFileRecursive(dir: string, depth = 0): Promise<string | null> {
+        if (depth > 6) return null
+        const entries = await readdir(dir, { withFileTypes: true })
+        for (const entry of entries) {
+          if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+          const full = path.join(dir, entry.name)
+          if (entry.isFile()) {
+            if (searchExts.includes(entry.name.toLowerCase())) {
+              return full
+            }
+          } else if (entry.isDirectory()) {
+            const found = await findFileRecursive(full, depth + 1)
+            if (found) return found
+          }
+        }
+        return null
+      }
+
+      const match = await findFileRecursive(path.resolve(root))
+      if (match) return match
+    } catch {
+      // ignore
+    }
+  }
+
+  return null
+}

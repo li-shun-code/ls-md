@@ -175,7 +175,11 @@ export function App() {
       }
 
       setActivePath(filePath)
-      setWorkspaceRoot(filePath.replace(/[\\/][^\\/]+$/, ''))
+      const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase()
+      const normalizedRoot = workspaceRoot ? workspaceRoot.replace(/\\/g, '/').toLowerCase() : ''
+      if (!workspaceRoot || !normalizedPath.startsWith(normalizedRoot)) {
+        setWorkspaceRoot(filePath.replace(/[\\/][^\\/]+$/, ''))
+      }
       setMarkdown(nextContent)
       setSavedMarkdown(nextContent)
       setMode('wysiwyg')
@@ -184,7 +188,7 @@ export function App() {
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '打开文档失败')
     }
-  }, [dirty, rememberRecent, showNotice])
+  }, [dirty, rememberRecent, showNotice, workspaceRoot])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -312,6 +316,84 @@ export function App() {
     const headingIndex = outline.findIndex((candidate) => candidate.id === item.id)
     if (headingIndex >= 0) editorRef.current?.selectHeading(headingIndex, item.line)
   }, [outline])
+
+  const handleNavigateLink = useCallback(async (href: string) => {
+    if (!href) return
+
+    // 1. 外部超链接
+    if (/^(?:https?|mailto):/i.test(href)) {
+      try {
+        await window.desktop.openExternal(href)
+      } catch {
+        window.open(href, '_blank')
+      }
+      return
+    }
+
+    // 2. 内部锚点跳转（当前文档内标题）
+    if (href.startsWith('#')) {
+      const anchor = decodeURIComponent(href.slice(1)).trim().toLowerCase()
+      if (!anchor) return
+      const targetItem = outline.find((item) =>
+        item.text.toLowerCase() === anchor ||
+        item.id.toLowerCase() === anchor ||
+        item.id.toLowerCase().replace(/^heading-\d+-/, '') === anchor
+      )
+      if (targetItem) {
+        handleOutlineSelect(targetItem)
+        showNotice(`已跳转到「${targetItem.text}」`)
+        return
+      }
+      const editorDom = document.querySelector('.tiptap-editor')
+      const headings = editorDom?.querySelectorAll('h1, h2, h3, h4, h5, h6')
+      if (headings) {
+        for (const heading of headings) {
+          if (heading.textContent?.trim().toLowerCase() === anchor || heading.id.toLowerCase() === anchor) {
+            heading.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            showNotice(`已跳转到「${heading.textContent}」`)
+            return
+          }
+        }
+      }
+      showNotice(`未找到锚点：${anchor}`)
+      return
+    }
+
+    // 3. 关联 Markdown 文档跳转
+    const [pathPart, anchorPart] = href.split('#')
+    const targetRelativePath = decodeURIComponent(pathPart).trim()
+    if (!targetRelativePath) return
+
+    const currentDir = activePath ? activePath.replace(/[\\/][^\\/]+$/, '') : (workspaceRoot || '')
+    const fullPath = await window.desktop.resolvePath(currentDir, targetRelativePath)
+    if (!fullPath) {
+      showNotice(`无法定位关联文档：${targetRelativePath}`)
+      return
+    }
+
+    try {
+      await openDocument(fullPath)
+      if (anchorPart) {
+        const anchor = decodeURIComponent(anchorPart).trim().toLowerCase()
+        window.setTimeout(() => {
+          const editorDom = document.querySelector('.tiptap-editor')
+          const headings = editorDom?.querySelectorAll('h1, h2, h3, h4, h5, h6')
+          if (headings) {
+            for (const heading of headings) {
+              if (heading.textContent?.trim().toLowerCase() === anchor || heading.id.toLowerCase() === anchor) {
+                heading.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                break
+              }
+            }
+          }
+        }, 200)
+      }
+      const fileName = fullPath.split(/[\\/]/).pop()
+      showNotice(`已打开关联文档：${fileName}`)
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : '打开关联文档失败')
+    }
+  }, [activePath, handleOutlineSelect, openDocument, outline, showNotice, workspaceRoot])
 
   const openWelcomeDocument = useCallback(() => {
     if (dirty && !window.confirm('当前文档有未保存的修改，确定要载入功能指南吗？')) return
@@ -532,6 +614,7 @@ export function App() {
                 onCursorChange={setCursor}
                 onDropImage={handleDropImage}
                 onOpenPreview={handleOpenPreview}
+                onNavigateLink={handleNavigateLink}
               />
             </article>
           </div>

@@ -46,22 +46,22 @@ function prepareSvgForPreview(svg: SVGElement): { markup: string; width: number;
   if (viewBox) {
     const parts = viewBox.trim().split(/[\s,]+/).map(Number)
     if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
-      width = parts[2]
-      height = parts[3]
+      width = Math.ceil(parts[2])
+      height = Math.ceil(parts[3])
     }
   } else {
     const w = parseFloat(clone.getAttribute('width') ?? '')
     const h = parseFloat(clone.getAttribute('height') ?? '')
     if (w > 0 && h > 0) {
-      width = w
-      height = h
+      width = Math.ceil(w)
+      height = Math.ceil(h)
       clone.setAttribute('viewBox', `0 0 ${w} ${h}`)
     }
   }
 
   clone.setAttribute('width', `${width}`)
   clone.setAttribute('height', `${height}`)
-  clone.setAttribute('style', `width: ${width}px; height: ${height}px; max-width: none; max-height: none; display: block;`)
+  clone.setAttribute('style', 'width: 100%; height: 100%; max-width: none; max-height: none; display: block;')
 
   return { markup: clone.outerHTML, width, height }
 }
@@ -104,6 +104,7 @@ type MarkdownEditorProps = {
   onCursorChange: (cursor: { line: number; column: number }) => void
   onDropImage: (sourcePath: string) => void
   onOpenPreview: (preview: EditorPreview) => void
+  onNavigateLink?: (href: string) => void
 }
 
 function selectSourceLine(source: HTMLTextAreaElement, line: number) {
@@ -229,6 +230,7 @@ function createMermaidNodeView(node: ProseMirrorNode, onOpenPreview?: (preview: 
     contentDOM: source,
     update: (nextNode: ProseMirrorNode) => {
       if (nextNode.type !== node.type) return false
+      if (nextNode.attrs.language?.trim().toLowerCase() !== 'mermaid') return false
       if (nextNode.eq(renderedNode)) return true
       renderedNode = nextNode
       renderPreview(nextNode)
@@ -242,7 +244,7 @@ function createMermaidNodeView(node: ProseMirrorNode, onOpenPreview?: (preview: 
 }
 
 const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(function MarkdownEditor(
-  { markdown, mode, workspaceRoot, onMarkdownChange, onSourceChange, onCursorChange, onDropImage, onOpenPreview },
+  { markdown, mode, workspaceRoot, onMarkdownChange, onSourceChange, onCursorChange, onDropImage, onOpenPreview, onNavigateLink },
   ref,
 ) {
   const [tableMenu, setTableMenu] = useState<{ x: number; y: number } | null>(null)
@@ -254,11 +256,13 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
   const onSourceChangeRef = useRef(onSourceChange)
   const onDropImageRef = useRef(onDropImage)
   const onOpenPreviewRef = useRef(onOpenPreview)
+  const onNavigateLinkRef = useRef(onNavigateLink)
   const workspaceRootRef = useRef(workspaceRoot)
   onMarkdownChangeRef.current = onMarkdownChange
   onSourceChangeRef.current = onSourceChange
   onDropImageRef.current = onDropImage
   onOpenPreviewRef.current = onOpenPreview
+  onNavigateLinkRef.current = onNavigateLink
   workspaceRootRef.current = workspaceRoot
 
   const lowlight = useMemo(() => createLowlight(common), [])
@@ -270,7 +274,7 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
     CodeBlockLowlight.configure({ lowlight }).extend({
       addNodeView() {
         return ({ node }) => {
-          if (node.attrs.language?.toLowerCase() === 'mermaid') {
+          if (node.attrs.language?.trim().toLowerCase() === 'mermaid') {
             return createMermaidNodeView(node, (previewData) => onOpenPreviewRef.current(previewData))
           }
 
@@ -323,6 +327,7 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
             contentDOM: code,
             update: (nextNode: typeof node) => {
               if (nextNode.type !== node.type) return false
+              if (nextNode.attrs.language?.trim().toLowerCase() === 'mermaid') return false
               if (nextNode.eq(renderedNode)) return true
               renderedNode = nextNode
               updateLineNumbers(nextNode)
@@ -368,6 +373,17 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
         click: (_view, event) => {
           const target = event.target
           if (!(target instanceof Element)) return false
+
+          const link = target.closest('a')
+          if (link instanceof HTMLAnchorElement) {
+            const href = link.getAttribute('href')
+            if (href) {
+              event.preventDefault()
+              event.stopPropagation()
+              onNavigateLinkRef.current?.(href)
+              return true
+            }
+          }
 
           const image = target.closest('img')
           if (image instanceof HTMLImageElement) {
