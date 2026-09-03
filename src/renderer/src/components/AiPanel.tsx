@@ -16,8 +16,10 @@ type AiPanelProps = {
   markdown: string
   documentKey: string
   documentTitle: string
+  initialAction?: { operation: AiOperation; prompt?: string; timestamp: number } | null
   onClose: () => void
   onSelectLine: (line: number) => void
+  onOpenSettings?: (tab: 'ai' | 'runners') => void
 }
 
 type PanelMessage = {
@@ -101,12 +103,8 @@ function operationLabel(operation: AiOperation): string {
   }[operation]
 }
 
-export function AiPanel({ editorRef, markdown, documentKey, documentTitle, onClose, onSelectLine }: AiPanelProps) {
+export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initialAction, onClose, onSelectLine, onOpenSettings }: AiPanelProps) {
   const [settings, setSettings] = useState<AiSettings | null>(null)
-  const [baseUrl, setBaseUrl] = useState('')
-  const [model, setModel] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [messages, setMessages] = useState<PanelMessage[]>([])
   const [sessions, setSessions] = useState<AiSession[]>(readStoredSessions)
   const [sessionId, setSessionId] = useState('')
@@ -128,15 +126,20 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, onClo
 
   useEffect(() => {
     let active = true
-    void window.desktop.getAiSettings().then((next) => {
-      if (!active) return
-      setSettings(next)
-      setBaseUrl(next.baseUrl)
-      setModel(next.model)
-    }).catch((loadError) => {
-      if (active) setError(loadError instanceof Error ? loadError.message : '无法读取 AI 配置')
-    })
-    return () => { active = false }
+    const loadSettings = () => {
+      void window.desktop.getAiSettings().then((next) => {
+        if (!active) return
+        setSettings(next)
+      }).catch((loadError) => {
+        if (active) setError(loadError instanceof Error ? loadError.message : '无法读取 AI 配置')
+      })
+    }
+    loadSettings()
+    window.addEventListener('focus', loadSettings)
+    return () => {
+      active = false
+      window.removeEventListener('focus', loadSettings)
+    }
   }, [])
 
   useEffect(() => {
@@ -212,29 +215,20 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, onClo
     .filter((session) => session.documentKey === documentKey && session.messages.length > 0)
     .sort((left, right) => right.updatedAt - left.updatedAt), [documentKey, sessions])
 
-  const saveSettings = async (nextApiKey?: string) => {
-    setError('')
-    try {
-      const next = await window.desktop.saveAiSettings({
-        baseUrl,
-        model,
-        ...(nextApiKey !== undefined ? { apiKey: nextApiKey } : {}),
-      })
-      setSettings(next)
-      setBaseUrl(next.baseUrl)
-      setModel(next.model)
-      setApiKey('')
-      setStatus('AI 配置已保存')
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : '保存 AI 配置失败')
-    }
-  }
-
   const send = async (operation: AiOperation, customPrompt?: string) => {
     if (busy) return
     const prompt = (customPrompt ?? input).trim()
-    if (!hasConfiguration) {
-      setSettingsOpen(true)
+    let currentConfigured = hasConfiguration
+    try {
+      const latest = await window.desktop.getAiSettings()
+      setSettings(latest)
+      currentConfigured = Boolean(latest.apiKeyConfigured && latest.model)
+    } catch {
+      // keep existing currentConfigured
+    }
+
+    if (!currentConfigured) {
+      onOpenSettings?.('ai')
       setError('请先配置 Base URL、模型和 API Key')
       return
     }
@@ -307,6 +301,20 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, onClo
     setStatus('会话已清空')
   }
 
+  const sendRef = useRef(send)
+  sendRef.current = send
+
+  const lastTriggeredActionRef = useRef<number>(0)
+  useEffect(() => {
+    if (!initialAction || initialAction.timestamp <= lastTriggeredActionRef.current) return
+    lastTriggeredActionRef.current = initialAction.timestamp
+    if (initialAction.operation === 'qa' && initialAction.prompt) {
+      setInput(`请针对以下内容进行说明或回答：\n${initialAction.prompt}`)
+    } else {
+      void sendRef.current(initialAction.operation, initialAction.prompt)
+    }
+  }, [initialAction])
+
   const startNewSession = () => {
     stop()
     setSessionId('')
@@ -355,7 +363,7 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, onClo
           </div>
         </div>
         <div className="ai-panel-header-actions">
-          <button type="button" className={`ai-icon-button${settingsOpen ? ' is-active' : ''}`} aria-label="AI 设置" title="AI 设置" onClick={() => setSettingsOpen((current) => !current)}>
+          <button type="button" className="ai-icon-button" aria-label="AI 模型设置" title="AI 模型设置" onClick={() => onOpenSettings?.('ai')}>
             <Settings2 size={16} strokeWidth={1.8} aria-hidden="true" />
           </button>
           <button type="button" className={`ai-icon-button${historyOpen ? ' is-active' : ''}`} aria-label="AI 历史会话" title="AI 历史会话" onClick={() => setHistoryOpen((current) => !current)}>
@@ -366,23 +374,6 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, onClo
           </button>
         </div>
       </div>
-
-      {settingsOpen && (
-        <form className="ai-settings" onSubmit={(event) => { event.preventDefault(); void saveSettings(apiKey || undefined) }}>
-          <div className="ai-settings-heading">
-            <span>兼容 OpenAI 的服务</span>
-            <button type="button" className="ai-text-button" onClick={() => setSettingsOpen(false)}>收起</button>
-          </div>
-          <label>Base URL<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.openai.com/v1" /></label>
-          <label>模型<input value={model} onChange={(event) => setModel(event.target.value)} placeholder="例如 gpt-4o-mini" /></label>
-          <label>API Key<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={settings?.apiKeyConfigured ? '已配置，留空表示保持不变' : '输入 API Key'} autoComplete="off" /></label>
-          <div className="ai-settings-actions">
-            <button type="submit" className="ai-primary-button">保存配置</button>
-            {settings?.apiKeyConfigured && <button type="button" className="ai-text-button is-danger" onClick={() => void saveSettings('')}>清除密钥</button>}
-          </div>
-          <p className="ai-settings-note">密钥由 Windows 系统加密保存，不会写入文档或浏览器存储。</p>
-        </form>
-      )}
 
       {historyOpen && (
         <section className="ai-history" aria-label="AI 历史会话">

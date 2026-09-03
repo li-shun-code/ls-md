@@ -1,11 +1,12 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type WheelEvent } from 'react'
-import { ChevronLeft, Code2, FolderOpen, PanelLeft, Search, Sparkles } from 'lucide-react'
-import type { FileNode, MenuCommand, MarkdownMode, OpenedDocument, WorkspaceSelection } from '@shared/types'
+import { AlertTriangle, ChevronLeft, Code2, FolderOpen, PanelLeft, Search, Settings, Sparkles } from 'lucide-react'
+import type { AiOperation, FileNode, MenuCommand, MarkdownMode, OpenedDocument, RecoverySnapshot, WorkspaceSelection } from '@shared/types'
 import { FileTree } from '@renderer/components/FileTree'
 import { IconButton } from '@renderer/components/IconButton'
 import { MarkdownEditor, type EditorCommands, type EditorPreview } from '@renderer/components/MarkdownEditor'
 import { AiPanel } from '@renderer/components/AiPanel'
 import { Outline } from '@renderer/components/Outline'
+import { SettingsModal, type SettingsTab } from './components/SettingsModal'
 import {
   buildExportHtml,
   countDocument,
@@ -42,6 +43,11 @@ export function App() {
   const [notice, setNotice] = useState('')
   const [preview, setPreview] = useState<EditorPreview | null>(null)
   const [previewZoom, setPreviewZoom] = useState(1)
+  const [aiAction, setAiAction] = useState<{ operation: AiOperation; prompt?: string; timestamp: number } | null>(null)
+  const [recoveryBanner, setRecoveryBanner] = useState<{ path: string; snapshot: RecoverySnapshot } | null>(null)
+  const [externalChangeBanner, setExternalChangeBanner] = useState<{ path: string; newContent: string } | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('runners')
 
   const deferredMarkdown = useDeferredValue(markdown)
   const outline = useMemo(() => extractOutline(deferredMarkdown), [deferredMarkdown])
@@ -60,6 +66,11 @@ export function App() {
   const showNotice = useCallback((message: string) => {
     setNotice(message)
     window.setTimeout(() => setNotice((current) => (current === message ? '' : current)), 2800)
+  }, [])
+
+  const handleOpenSettings = useCallback((tab: SettingsTab = 'runners') => {
+    setSettingsTab(tab)
+    setSettingsOpen(true)
   }, [])
 
   const toggleSidebar = useCallback(() => {
@@ -166,29 +177,65 @@ export function App() {
     try {
       const content = contentOverride ?? (await window.desktop.readMarkdown(filePath))
       const snapshot = await window.desktop.readRecovery(filePath)
-      let nextContent = content
 
-      if (snapshot && snapshot.markdown !== content) {
-        const shouldRestore = window.confirm('发现这个文档的未保存恢复内容，要恢复它吗？')
-        if (shouldRestore) nextContent = snapshot.markdown
-        else await window.desktop.clearRecovery(filePath)
+      // 规范化比对，避免因纯空格或换行符格式化引发误恢复
+      const normalizeText = (text: string) => text.replace(/\r\n/g, '\n').trim()
+      if (snapshot && normalizeText(snapshot.markdown) !== normalizeText(content)) {
+        setRecoveryBanner({ path: filePath, snapshot })
+      } else {
+        setRecoveryBanner(null)
+        if (snapshot) {
+          void window.desktop.clearRecovery(filePath)
+        }
       }
+      setExternalChangeBanner(null)
 
       setActivePath(filePath)
       const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase()
       const normalizedRoot = workspaceRoot ? workspaceRoot.replace(/\\/g, '/').toLowerCase() : ''
       if (!workspaceRoot || !normalizedPath.startsWith(normalizedRoot)) {
-        setWorkspaceRoot(filePath.replace(/[\\/][^\\/]+$/, ''))
+        const nextRoot = filePath.replace(/[\\/][^\\/]+$/, '')
+        setWorkspaceRoot(nextRoot)
+        void refreshTree(nextRoot)
       }
-      setMarkdown(nextContent)
-      setSavedMarkdown(nextContent)
+      setMarkdown(content)
+      setSavedMarkdown(content)
       setMode('wysiwyg')
       setCursor({ line: 1, column: 1 })
       rememberRecent(filePath)
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '打开文档失败')
     }
-  }, [dirty, rememberRecent, showNotice, workspaceRoot])
+  }, [dirty, refreshTree, rememberRecent, showNotice, workspaceRoot])
+
+  const handleApplyRecovery = useCallback(async () => {
+    if (!recoveryBanner) return
+    const restoredText = recoveryBanner.snapshot.markdown
+    setMarkdown(restoredText)
+    await window.desktop.clearRecovery(recoveryBanner.path)
+    setRecoveryBanner(null)
+    showNotice('已恢复未保存版本内容')
+  }, [recoveryBanner, showNotice])
+
+  const handleDiscardRecovery = useCallback(async () => {
+    if (!recoveryBanner) return
+    await window.desktop.clearRecovery(recoveryBanner.path)
+    setRecoveryBanner(null)
+    showNotice('已放弃未保存恢复内容')
+  }, [recoveryBanner, showNotice])
+
+  const handleAcceptExternal = useCallback(() => {
+    if (!externalChangeBanner) return
+    setMarkdown(externalChangeBanner.newContent)
+    setSavedMarkdown(externalChangeBanner.newContent)
+    setExternalChangeBanner(null)
+    showNotice('已载入外部修改版本')
+  }, [externalChangeBanner, showNotice])
+
+  const handleKeepLocal = useCallback(() => {
+    setExternalChangeBanner(null)
+    showNotice('已保留当前编辑版本')
+  }, [showNotice])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -222,6 +269,8 @@ export function App() {
 
   const newDocument = useCallback(() => {
     if (dirty && !window.confirm('当前文档有未保存的修改，确定要新建文档吗？')) return
+    setRecoveryBanner(null)
+    setExternalChangeBanner(null)
     setActivePath('')
     setMarkdown('')
     setSavedMarkdown('')
@@ -236,6 +285,8 @@ export function App() {
       if (!activePath) {
         const saved = await window.desktop.saveMarkdownAs('未命名.md', content)
         if (!saved) return
+        setRecoveryBanner(null)
+        setExternalChangeBanner(null)
         setActivePath(saved.path)
         setWorkspaceRoot(saved.path.replace(/[\\/][^\\/]+$/, ''))
         setMarkdown(saved.content)
@@ -246,6 +297,8 @@ export function App() {
       }
 
       await window.desktop.writeMarkdown(activePath, content)
+      setRecoveryBanner(null)
+      setExternalChangeBanner(null)
       setMarkdown(content)
       setSavedMarkdown(content)
       await window.desktop.clearRecovery(activePath)
@@ -261,6 +314,8 @@ export function App() {
       const content = mode === 'wysiwyg' ? markdown : markdownFromEditor(markdown, workspaceRoot)
       const saved = await window.desktop.saveMarkdownAs(activePath || '未命名.md', content)
       if (!saved) return
+      setRecoveryBanner(null)
+      setExternalChangeBanner(null)
       setActivePath(saved.path)
       setWorkspaceRoot(saved.path.replace(/[\\/][^\\/]+$/, ''))
       setMarkdown(saved.content)
@@ -395,6 +450,11 @@ export function App() {
     }
   }, [activePath, handleOutlineSelect, openDocument, outline, showNotice, workspaceRoot])
 
+  const handleTriggerAiAction = useCallback((operation: AiOperation, selectedText: string) => {
+    setAiAction({ operation, prompt: selectedText, timestamp: Date.now() })
+    setAiOpen(true)
+  }, [])
+
   const openWelcomeDocument = useCallback(() => {
     if (dirty && !window.confirm('当前文档有未保存的修改，确定要载入功能指南吗？')) return
     setActivePath('')
@@ -446,8 +506,9 @@ export function App() {
       case 'theme.toggle': setTheme((current) => current === 'light' ? 'dark' : 'light'); break
       case 'help.shortcuts': setShortcutsOpen(true); break
       case 'help.welcomeDocument': openWelcomeDocument(); break
+      case 'settings.open': handleOpenSettings('runners'); break
     }
-  }, [exportDocument, newDocument, openWelcomeDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
+  }, [exportDocument, handleOpenSettings, newDocument, openWelcomeDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
 
   useEffect(() => {
     localStorage.setItem('markdown-desk-theme', theme)
@@ -485,11 +546,18 @@ export function App() {
   useEffect(() => window.desktop.onFileChanged((filePath) => {
     if (filePath !== activePath) return
     void window.desktop.readMarkdown(filePath).then((nextContent) => {
-      if (nextContent === markdown) return
-      if (dirty && !window.confirm('这个文档已被其他程序修改，重新加载会丢失当前未保存内容。继续吗？')) return
-      void openDocument(filePath, nextContent)
+      const normalize = (text: string) => text.replace(/\r\n/g, '\n').trim()
+      if (normalize(nextContent) === normalize(markdown)) return
+
+      if (!dirty) {
+        setMarkdown(nextContent)
+        setSavedMarkdown(nextContent)
+        showNotice('文档已从外部更新')
+      } else {
+        setExternalChangeBanner({ path: filePath, newContent: nextContent })
+      }
     }).catch(() => undefined)
-  }), [activePath, dirty, markdown, openDocument])
+  }), [activePath, dirty, markdown, showNotice])
 
   useEffect(() => {
     if (!activePath || !dirty) return
@@ -521,6 +589,7 @@ export function App() {
       if (key === 'l' && event.shiftKey) { event.preventDefault(); toggleSidebar(); return }
       if (key === 'f' && event.shiftKey) { event.preventDefault(); setFocusMode((current) => !current); return }
       if (key === 'p' && !event.shiftKey) { event.preventDefault(); void window.desktop.print(); return }
+      if (key === ',' && !event.shiftKey) { event.preventDefault(); handleOpenSettings('runners'); return }
       if (key === '=' || key === '+') { event.preventDefault(); setZoom((current) => Math.min(1.25, current + 0.05)); return }
       if (key === '-') { event.preventDefault(); setZoom((current) => Math.max(0.8, current - 0.05)); return }
       if (key === '0' && !event.shiftKey) {
@@ -550,7 +619,7 @@ export function App() {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [insertLink, mode, newDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
+  }, [handleOpenSettings, insertLink, mode, newDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
 
   return (
     <div className={`app-shell theme-${theme}${focusMode ? ' is-focus-mode' : ''}${sidebarOpen ? '' : ' is-sidebar-closed'}`} style={{ '--editor-zoom': zoom } as CSSProperties}>
@@ -567,6 +636,7 @@ export function App() {
                   {fileTree.length > 0 ? (
                     <FileTree
                       nodes={fileTree}
+                      workspaceRoot={workspaceRoot}
                       activePath={activePath}
                       expandedPaths={expandedPaths}
                       onToggle={(path) => setExpandedPaths((current) => {
@@ -576,6 +646,17 @@ export function App() {
                         return next
                       })}
                       onSelect={(path) => void openDocument(path)}
+                      onRefresh={() => { if (workspaceRoot) void refreshTree(workspaceRoot) }}
+                      onNotice={showNotice}
+                      onOpenFile={(newPath) => void openDocument(newPath)}
+                      onRenameFile={(oldPath, newPath) => {
+                        if (activePath === oldPath) setActivePath(newPath)
+                        if (workspaceRoot) void refreshTree(workspaceRoot)
+                      }}
+                      onDeleteFile={(deletedPath) => {
+                        if (activePath === deletedPath) newDocument()
+                        if (workspaceRoot) void refreshTree(workspaceRoot)
+                      }}
                     />
                   ) : workspaceRoot ? (
                     <div className="sidebar-empty">
@@ -602,6 +683,30 @@ export function App() {
         )}
 
         <section className="editor-pane" aria-label="Markdown 编辑器">
+          {recoveryBanner && (
+            <div className="editor-banner is-warning" role="alert">
+              <span className="banner-icon"><AlertTriangle size={15} /></span>
+              <span className="banner-text">
+                检测到此文档有未保存的恢复版本（时间：{new Date(recoveryBanner.snapshot.createdAt).toLocaleTimeString()}）
+              </span>
+              <div className="banner-actions">
+                <button type="button" className="banner-btn is-primary" onClick={handleApplyRecovery}>恢复未保存内容</button>
+                <button type="button" className="banner-btn" onClick={handleDiscardRecovery}>丢弃恢复</button>
+              </div>
+            </div>
+          )}
+          {externalChangeBanner && (
+            <div className="editor-banner is-info" role="alert">
+              <span className="banner-icon"><AlertTriangle size={15} /></span>
+              <span className="banner-text">
+                当前文件已被外部程序更新，是否载入外部最新修改？
+              </span>
+              <div className="banner-actions">
+                <button type="button" className="banner-btn is-primary" onClick={handleAcceptExternal}>载入外部修改</button>
+                <button type="button" className="banner-btn" onClick={handleKeepLocal}>保留当前编辑</button>
+              </div>
+            </div>
+          )}
           <div className="editor-scroll">
             <article className="editor-frame">
               <MarkdownEditor
@@ -615,6 +720,7 @@ export function App() {
                 onDropImage={handleDropImage}
                 onOpenPreview={handleOpenPreview}
                 onNavigateLink={handleNavigateLink}
+                onTriggerAiAction={handleTriggerAiAction}
               />
             </article>
           </div>
@@ -624,6 +730,7 @@ export function App() {
               <IconButton icon={sidebarOpen ? ChevronLeft : PanelLeft} label={sidebarOpen ? '隐藏侧栏' : '显示侧栏'} onClick={toggleSidebar} active={sidebarOpen} />
               <IconButton icon={Code2} label={mode === 'source' ? '切换到所见即所得' : '切换到源码'} onClick={toggleMode} active={mode === 'source'} />
               <IconButton icon={Sparkles} label={aiOpen ? '关闭 AI 面板' : '打开 AI 面板'} onClick={() => setAiOpen((current) => !current)} active={aiOpen} />
+              <IconButton icon={Settings} label="首选项与设置 (Ctrl+,)" onClick={() => handleOpenSettings('runners')} />
             </div>
             <span className="status-spacer" />
             <div className="status-info">
@@ -642,8 +749,10 @@ export function App() {
             markdown={markdown}
             documentKey={activePath || 'untitled'}
             documentTitle={documentTitle}
+            initialAction={aiAction}
             onClose={() => setAiOpen(false)}
             onSelectLine={(line) => editorRef.current?.selectLine(line)}
+            onOpenSettings={handleOpenSettings}
           />
         )}
       </div>
@@ -688,6 +797,7 @@ export function App() {
               {[
                 ['保存', 'Ctrl + S'],
                 ['另存为', 'Ctrl + Shift + S'],
+                ['首选项与设置', 'Ctrl + ,'],
                 ['搜索', 'Ctrl + F'],
                 ['一级至六级标题', 'Ctrl + 1 … 6'],
                 ['正文段落', 'Ctrl + 0'],
@@ -835,6 +945,13 @@ export function App() {
           </section>
         </div>
       )}
+
+      <SettingsModal
+        open={settingsOpen}
+        initialTab={settingsTab}
+        onClose={() => setSettingsOpen(false)}
+        onSettingsSaved={() => showNotice('设置已保存并生效')}
+      />
 
       {notice && <div className="notice" role="status" aria-live="polite">{notice}</div>}
     </div>
