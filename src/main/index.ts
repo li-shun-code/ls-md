@@ -300,6 +300,18 @@ async function createWindow(): Promise<void> {
   }
 }
 
+const LANGUAGE_ALIASES: Record<string, string> = {
+  py: 'python',
+  js: 'javascript',
+  node: 'javascript',
+  ts: 'typescript',
+  sh: 'bash',
+  shell: 'bash',
+  ps1: 'powershell',
+  golang: 'go',
+  rs: 'rust',
+}
+
 function registerIpc(): void {
   ipcMain.handle('workspace:choose', async (event) => {
     if (!isTrustedSender(event.sender)) return null
@@ -561,18 +573,17 @@ function registerIpc(): void {
   ipcMain.handle('runner:execute', async (event, request: ExecutionRequest) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
     const settings = await settingsService.getSettings()
-    const lang = (request.language || '').toLowerCase().trim()
-    // match by id, language, or alias (e.g. py -> python, js -> javascript)
+    const rawLang = (request.language || '').toLowerCase().trim()
+    const lang = LANGUAGE_ALIASES[rawLang] || rawLang
     const runner =
       settings.runners[lang] ||
+      settings.runners[rawLang] ||
       Object.values(settings.runners).find(
         (r) =>
           r.language === lang ||
           r.id === lang ||
-          (lang === 'js' && r.id === 'javascript') ||
-          (lang === 'py' && r.id === 'python') ||
-          (lang === 'ts' && r.id === 'typescript') ||
-          (lang === 'sh' && r.id === 'bash')
+          r.language === rawLang ||
+          r.id === rawLang
       )
     if (!runner || !runner.enabled) {
       return {
