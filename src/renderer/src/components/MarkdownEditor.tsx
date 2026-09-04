@@ -120,6 +120,8 @@ type MarkdownEditorProps = {
   markdown: string
   mode: MarkdownMode
   workspaceRoot: string
+  enableInputRules: boolean
+  enableTypewriter: boolean
   onMarkdownChange: (markdown: string) => void
   onSourceChange: (markdown: string) => void
   onCursorChange: (cursor: { line: number; column: number }) => void
@@ -307,6 +309,10 @@ function createMermaidNodeView(node: ProseMirrorNode, onOpenPreview?: (preview: 
       renderedNode = nextNode
       renderPreview(nextNode)
       return true
+    },
+    destroy: () => {
+      // 文档切换/节点销毁时作废进行中的 mermaid 渲染，避免在已分离 DOM 上继续写入
+      renderVersion += 1
     },
     ignoreMutation: (mutation: MutationRecord) => {
       if (mutation.type === 'selection') return false
@@ -1085,9 +1091,17 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
   useEffect(() => {
     if (!editor || mode !== 'wysiwyg') return
     if (lastEditorMarkdownRef.current === markdown) return
-
-    editor.commands.setContent(markdownForEditor(markdown, workspaceRoot), { emitUpdate: false, contentType: 'markdown' })
-    lastEditorMarkdownRef.current = markdown
+    try {
+      editor.commands.setContent(markdownForEditor(markdown, workspaceRoot), { emitUpdate: false, contentType: 'markdown' })
+      lastEditorMarkdownRef.current = markdown
+    } catch (error) {
+      // 切换文档/载入内容解析失败：保留旧文档，避免渲染进程处于不一致状态；同时上报以便排查
+      void window.desktop?.logToFile?.('error', 'Markdown 解析失败（setContent）', {
+        message: error instanceof Error ? error.message : String(error),
+        markdownChars: markdown.length,
+        workspaceRoot,
+      }).catch(() => undefined)
+    }
   }, [editor, markdown, mode, workspaceRoot])
 
   useImperativeHandle(ref, () => ({

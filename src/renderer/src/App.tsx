@@ -175,6 +175,7 @@ export function App() {
     if (dirty && !window.confirm('当前文档有未保存的修改，确定要切换文档吗？')) return
 
     try {
+      void window.desktop.logToFile?.('info', '切换文档', { filePath }).catch(() => undefined)
       const content = contentOverride ?? (await window.desktop.readMarkdown(filePath))
       const snapshot = await window.desktop.readRecovery(filePath)
 
@@ -203,8 +204,16 @@ export function App() {
       setMode('wysiwyg')
       setCursor({ line: 1, column: 1 })
       rememberRecent(filePath)
+      void window.desktop.logToFile?.('info', '切换文档完成', {
+        filePath,
+        contentChars: content.length,
+      }).catch(() => undefined)
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '打开文档失败')
+      void window.desktop.logToFile?.('error', '切换文档失败', {
+        filePath,
+        message: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined)
     }
   }, [dirty, refreshTree, rememberRecent, showNotice, workspaceRoot])
 

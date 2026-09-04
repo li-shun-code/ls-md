@@ -206,6 +206,7 @@ export type DesktopBridge = {
   onWorkspaceSelected: (callback: (selection: WorkspaceSelection) => void) => () => void
   onDocumentOpened: (callback: (document: OpenedDocument) => void) => () => void
   onFileChanged: (callback: (path: string) => void) => () => void
+  logToFile: (level: 'info' | 'warn' | 'error', message: string, meta?: unknown) => Promise<void>
 }
 
 export type DesktopApi = DesktopBridge

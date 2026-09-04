@@ -43,6 +43,7 @@ const desktopBridge: DesktopBridge = {
   onWorkspaceSelected: (callback) => subscribe('workspace-selected', callback),
   onDocumentOpened: (callback) => subscribe('document-opened', callback),
   onFileChanged: (callback) => subscribe('file-changed', callback),
+  logToFile: (level, message, meta) => ipcRenderer.invoke('app:log', level, message, meta),
 }
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {

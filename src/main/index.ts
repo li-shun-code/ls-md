@@ -20,6 +20,7 @@ import { RecentService } from './recent-service'
 import { RecoveryService } from './recovery-service'
 import { SettingsService } from './settings-service'
 import { RunnerService } from './runner-service'
+import { initAppLogger } from './logger'
 import type {
   AiRequest,
   AiSettingsInput,
@@ -46,7 +47,20 @@ let pendingOpenPath: string | null = findMarkdownArgument(process.argv)
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-gpu')
 app.commandLine.appendSwitch('disable-gpu-compositing')
-app.commandLine.appendSwitch('in-process-gpu')
+// 注意：曾使用 in-process-gpu，与 sandbox:false 组合在部分驱动下会扩大渲染进程原生崩溃面（切换文档易触发），故移除。
+
+// 日志：优先安装目录，写入失败自动回退用户数据目录（见 logger.ts）
+const appLogger = initAppLogger(
+  path.join(app.getAppPath(), 'logs'),
+  path.join(app.getPath('userData'), 'logs'),
+)
+
+process.on('uncaughtException', (error) => {
+  appLogger.error('主进程未捕获异常', { name: error?.name, message: error?.message, stack: error?.stack })
+})
+process.on('unhandledRejection', (reason) => {
+  appLogger.error('主进程未处理的 Promise 拒绝', { reason: reason instanceof Error ? { message: reason.message, stack: reason.stack } : reason })
+})
 
 if (!isPrimaryInstance) {
   app.quit()
@@ -216,6 +230,7 @@ async function openMarkdownFile(filePath: string): Promise<void> {
     const content = await readMarkdown(workspaceRoot || path.dirname(resolvedPath), resolvedPath)
     watchDocument(resolvedPath)
     mainWindow.webContents.send('document-opened', { path: resolvedPath, content } satisfies OpenedDocument)
+    appLogger.info('打开 Markdown 文档', { path: resolvedPath })
     if (recentService) {
       await recentService.addRecentFile(resolvedPath)
       await updateApplicationMenu()
@@ -234,6 +249,7 @@ async function openMarkdownFile(filePath: string): Promise<void> {
       await updateApplicationMenu()
     }
     const message = error instanceof Error ? error.message : String(error)
+    appLogger.error('打开 Markdown 文档失败', { path: resolvedPath, message })
     if (mainWindow && !mainWindow.isDestroyed()) {
       dialog.showMessageBox(mainWindow, {
         type: 'warning',
@@ -274,12 +290,17 @@ async function createWindow(): Promise<void> {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
   window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    appLogger.error('渲染进程页面加载失败', { errorCode, errorDescription, validatedURL, isMainFrame })
     if (isMainFrame) {
       console.error(`Renderer 加载失败 (${errorCode}): ${errorDescription} - ${validatedURL}`)
     }
   })
   window.webContents.on('render-process-gone', (_event, details) => {
-    console.error('Renderer process gone:', details)
+    appLogger.error('渲染进程异常终止（render-process-gone）', {
+      reason: details.reason,
+      exitCode: details.exitCode,
+      pid: details.pid,
+    })
     if (details.reason !== 'clean-exit' && mainWindow && !mainWindow.isDestroyed()) {
       dialog.showMessageBox(mainWindow, {
         type: 'error',
@@ -291,6 +312,9 @@ async function createWindow(): Promise<void> {
         }
       }).catch(() => undefined)
     }
+  })
+  window.webContents.on('unresponsive', () => {
+    appLogger.error('渲染进程无响应（unresponsive）', { pid: window.webContents.getOSProcessId() })
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -565,6 +589,13 @@ function registerIpc(): void {
     return settingsService.updateSettings(partial)
   })
 
+  ipcMain.handle('app:log', (event, level: unknown, message: unknown, meta: unknown) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const safeLevel = level === 'warn' || level === 'error' ? level : 'info'
+    const safeMessage = typeof message === 'string' ? message : String(message ?? '')
+    appLogger[safeLevel](`[renderer] ${safeMessage}`, meta)
+  })
+
   ipcMain.handle('runner:detect-env', async (event) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
     return runnerService.detectEnvironments()
@@ -608,6 +639,13 @@ function registerIpc(): void {
 app.whenReady().then(async () => {
   if (!isPrimaryInstance) return
   try {
+    appLogger.info('墨笺启动', {
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      devUrl: Boolean(process.env.ELECTRON_RENDERER_URL),
+      logDirectory: appLogger.getLogDirectory(),
+    })
     recoveryService = new RecoveryService(app.getPath('userData'))
     recentService = new RecentService(app.getPath('userData'), 20)
     aiService = new AiService(app.getPath('userData'))
