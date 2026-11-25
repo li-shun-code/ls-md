@@ -1,6 +1,14 @@
 import { app } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import { createRequire } from 'node:module'
+import type { AppUpdater } from 'electron-updater'
 import type { UpdateState } from '../shared/types'
+
+// electron-updater 是 CommonJS 包；主进程以 ESM 输出时，Node 的 ESM loader 无法
+// 从 CJS 静态解析命名导出（类型声明能通过编译，但运行时报 "Named export not found"）。
+// 用 createRequire 走 CJS 互操作加载，兼容最终的 ESM 产物。
+const require = createRequire(import.meta.url)
+const updaterModule = require('electron-updater') as { autoUpdater: AppUpdater }
+const autoUpdater = updaterModule.autoUpdater
 
 export type UpdateServiceOptions = {
   /** 通知所有渲染窗口更新状态变化 */
