@@ -1,4 +1,4 @@
-import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { Markdown } from '@tiptap/markdown'
 import StarterKit from '@tiptap/starter-kit'
@@ -120,6 +120,8 @@ type MarkdownEditorProps = {
   markdown: string
   mode: MarkdownMode
   workspaceRoot: string
+  /** 当前文档标识：变化时读取/记录该文档的阅读滚动位置（null 表示未打开文件） */
+  scrollPositionKey?: string | null
   enableInputRules: boolean
   enableTypewriter: boolean
   onMarkdownChange: (markdown: string) => void
@@ -129,6 +131,7 @@ type MarkdownEditorProps = {
   onOpenPreview: (preview: EditorPreview) => void
   onNavigateLink?: (href: string) => void
   onTriggerAiAction?: (operation: AiOperation, selectedText: string) => void
+  onRunCode?: (language: string, code: string, workingDirectory?: string) => void
 }
 
 function selectSourceLine(source: HTMLTextAreaElement, line: number) {
@@ -322,7 +325,7 @@ function createMermaidNodeView(node: ProseMirrorNode, onOpenPreview?: (preview: 
 }
 
 const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(function MarkdownEditor(
-  { markdown, mode, workspaceRoot, onMarkdownChange, onSourceChange, onCursorChange, onDropImage, onOpenPreview, onNavigateLink, onTriggerAiAction },
+  { markdown, mode, workspaceRoot, scrollPositionKey, onMarkdownChange, onSourceChange, onCursorChange, onDropImage, onOpenPreview, onNavigateLink, onTriggerAiAction, onRunCode },
   ref,
 ) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
@@ -336,6 +339,7 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
   const onOpenPreviewRef = useRef(onOpenPreview)
   const onNavigateLinkRef = useRef(onNavigateLink)
   const onTriggerAiActionRef = useRef(onTriggerAiAction)
+  const onRunCodeRef = useRef(onRunCode)
   const workspaceRootRef = useRef(workspaceRoot)
   onMarkdownChangeRef.current = onMarkdownChange
   onSourceChangeRef.current = onSourceChange
@@ -343,7 +347,10 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
   onOpenPreviewRef.current = onOpenPreview
   onNavigateLinkRef.current = onNavigateLink
   onTriggerAiActionRef.current = onTriggerAiAction
+  onRunCodeRef.current = onRunCode
   workspaceRootRef.current = workspaceRoot
+  const scrollPositionKeyRef = useRef(scrollPositionKey)
+  scrollPositionKeyRef.current = scrollPositionKey
 
   const lowlight = useMemo(() => createLowlight(common), [])
   const extensions = useMemo(() => [
@@ -360,8 +367,6 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
 
           let currentNode = node
           let renderedNode = node
-          let isRunning = false
-          let currentExecutionId: string | null = null
 
           const dom = document.createElement('div')
           dom.className = 'code-block-wrapper'
@@ -412,219 +417,25 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
 
           toolbar.append(langBadge, runButton, copyButton)
           pre.append(gutter, code, toolbar)
-
-          const outputPanel = document.createElement('div')
-          outputPanel.className = 'code-block-output'
-          outputPanel.setAttribute('contenteditable', 'false')
-
-          const outputHeader = document.createElement('div')
-          outputHeader.className = 'code-output-header'
-          outputHeader.setAttribute('contenteditable', 'false')
-
-          const headerMeta = document.createElement('div')
-          headerMeta.style.display = 'flex'
-          headerMeta.style.alignItems = 'center'
-          headerMeta.style.gap = '8px'
-
-          const statusBadge = document.createElement('span')
-          statusBadge.className = 'code-output-status'
-
-          const durationBadge = document.createElement('span')
-          durationBadge.className = 'code-output-duration'
-
-          headerMeta.append(statusBadge, durationBadge)
-
-          const headerActions = document.createElement('div')
-          headerActions.style.display = 'flex'
-          headerActions.style.alignItems = 'center'
-          headerActions.style.gap = '4px'
-
-          const collapseBtn = document.createElement('button')
-          collapseBtn.type = 'button'
-          collapseBtn.className = 'code-output-btn'
-          collapseBtn.setAttribute('contenteditable', 'false')
-          collapseBtn.textContent = '折叠'
-          collapseBtn.addEventListener('mousedown', (e) => e.preventDefault())
-          collapseBtn.addEventListener('click', (e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            const isCollapsed = outputBody.classList.toggle('is-collapsed')
-            collapseBtn.textContent = isCollapsed ? '展开' : '折叠'
-          })
-
-          const clearBtn = document.createElement('button')
-          clearBtn.type = 'button'
-          clearBtn.className = 'code-output-btn'
-          clearBtn.setAttribute('contenteditable', 'false')
-          clearBtn.textContent = '清空'
-          clearBtn.addEventListener('mousedown', (e) => e.preventDefault())
-          clearBtn.addEventListener('click', (e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            if (isRunning && currentExecutionId) {
-              if (window.desktop?.cancelExecution) {
-                void window.desktop.cancelExecution(currentExecutionId)
-              }
-              isRunning = false
-              currentExecutionId = null
-              runButton.textContent = '▶ 运行'
-              runButton.classList.remove('is-running', 'code-stop-btn')
-            }
-            outputPanel.remove()
-            dom.classList.remove('has-output')
-            outputBody.replaceChildren()
-            statusBadge.textContent = ''
-            statusBadge.className = 'code-output-status'
-            durationBadge.textContent = ''
-          })
-
-          headerActions.append(collapseBtn, clearBtn)
-          outputHeader.append(headerMeta, headerActions)
-
-          const outputBody = document.createElement('div')
-          outputBody.className = 'code-output-body'
-          outputBody.setAttribute('contenteditable', 'false')
-
-          outputPanel.append(outputHeader, outputBody)
           dom.append(pre)
 
-          const runCode = async () => {
-            if (isRunning) return
-            isRunning = true
-            const executionId = 'exec-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)
-            currentExecutionId = executionId
-
-            runButton.textContent = '⏹ 终止'
-            runButton.classList.add('is-running', 'code-stop-btn')
-
-            if (!dom.contains(outputPanel)) {
-              dom.append(outputPanel)
-            }
-            dom.classList.add('has-output')
-            outputBody.classList.remove('is-collapsed')
-            collapseBtn.textContent = '折叠'
-
-            statusBadge.textContent = '运行中...'
-            statusBadge.className = 'code-output-status is-running'
-            durationBadge.textContent = ''
-            outputBody.replaceChildren()
-
-            if (!window.desktop?.executeCode) {
-              isRunning = false
-              currentExecutionId = null
-              runButton.textContent = '▶ 运行'
-              runButton.classList.remove('is-running', 'code-stop-btn')
-              statusBadge.textContent = '失败 (1)'
-              statusBadge.className = 'code-output-status is-error'
-              const errEl = document.createElement('div')
-              errEl.className = 'code-output-stderr'
-              errEl.textContent = '代码执行服务不可用'
-              outputBody.append(errEl)
-              return
-            }
-
-            try {
-              const result = await window.desktop.executeCode({
-                executionId,
-                language: currentNode.attrs.language || 'text',
-                code: code.textContent ?? '',
-                workingDirectory: workspaceRootRef.current || undefined,
-              })
-
-              if (currentExecutionId !== executionId) {
-                return
-              }
-
-              isRunning = false
-              currentExecutionId = null
-              runButton.textContent = '▶ 运行'
-              runButton.classList.remove('is-running', 'code-stop-btn')
-
-              if (result.timedOut) {
-                statusBadge.textContent = '超时 (15s)'
-                statusBadge.className = 'code-output-status is-timeout'
-              } else if (result.exitCode === 0) {
-                statusBadge.textContent = '成功 (0)'
-                statusBadge.className = 'code-output-status is-success'
-              } else {
-                statusBadge.textContent = `失败 (${result.exitCode ?? 1})`
-                statusBadge.className = 'code-output-status is-error'
-              }
-
-              durationBadge.textContent = `${result.durationMs}ms`
-
-              outputBody.replaceChildren()
-              if (result.stdout) {
-                const stdoutEl = document.createElement('div')
-                stdoutEl.className = 'code-output-stdout'
-                stdoutEl.textContent = result.stdout
-                outputBody.append(stdoutEl)
-              }
-              if (result.stderr) {
-                const stderrEl = document.createElement('div')
-                stderrEl.className = 'code-output-stderr'
-                stderrEl.textContent = result.stderr
-                outputBody.append(stderrEl)
-              }
-              if (result.error && !result.stdout && !result.stderr) {
-                const errorEl = document.createElement('div')
-                errorEl.className = 'code-output-stderr'
-                errorEl.textContent = result.error
-                outputBody.append(errorEl)
-              }
-              if (!result.stdout && !result.stderr && !result.error) {
-                const emptyEl = document.createElement('div')
-                emptyEl.className = 'code-output-stdout'
-                emptyEl.style.opacity = '0.6'
-                emptyEl.textContent = '(执行完成，无输出)'
-                outputBody.append(emptyEl)
-              }
-            } catch (error) {
-              if (currentExecutionId !== executionId) {
-                return
-              }
-              isRunning = false
-              currentExecutionId = null
-              runButton.textContent = '▶ 运行'
-              runButton.classList.remove('is-running', 'code-stop-btn')
-
-              statusBadge.textContent = '失败 (1)'
-              statusBadge.className = 'code-output-status is-error'
-              durationBadge.textContent = ''
-
-              outputBody.replaceChildren()
-              const errEl = document.createElement('div')
-              errEl.className = 'code-output-stderr'
-              errEl.textContent = error instanceof Error ? error.message : String(error)
-              outputBody.append(errEl)
-            }
+          const triggerRun = () => {
+            const snippet = currentNode.textContent || code.textContent || ''
+            if (!snippet.trim()) return
+            onRunCodeRef.current?.(currentNode.attrs.language || 'text', snippet, workspaceRootRef.current || undefined)
           }
 
           runButton.addEventListener('mousedown', (event) => event.preventDefault())
           runButton.addEventListener('click', (event) => {
             event.preventDefault()
             event.stopPropagation()
-            if (isRunning) {
-              const idToCancel = currentExecutionId
-              isRunning = false
-              currentExecutionId = null
-              runButton.textContent = '▶ 运行'
-              runButton.classList.remove('is-running', 'code-stop-btn')
-              statusBadge.textContent = '已终止'
-              statusBadge.className = 'code-output-status is-error'
-              if (idToCancel && window.desktop?.cancelExecution) {
-                void window.desktop.cancelExecution(idToCancel)
-              }
-              return
-            }
-            void runCode()
+            triggerRun()
           })
-
           code.addEventListener('keydown', (event) => {
             if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
               event.preventDefault()
               event.stopPropagation()
-              void runCode()
+              triggerRun()
             }
           })
 
@@ -659,11 +470,7 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
               return !code.contains(mutation.target)
             },
             destroy: () => {
-              if (isRunning && currentExecutionId) {
-                if (window.desktop?.cancelExecution) {
-                  void window.desktop.cancelExecution(currentExecutionId)
-                }
-              }
+              // 运行已迁移至代码运行对话框；无内嵌进程需要在此取消
             },
           }
         }
@@ -1069,6 +876,72 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
       })
     },
   })
+
+  const getScrollTarget = useCallback((): HTMLElement | null => {
+    if (!scrollPositionKeyRef.current) return null
+    if (mode === 'source') return sourceRef.current
+    const dom = editor?.view.dom
+    return dom ? (dom.closest('.editor-scroll') as HTMLElement | null) : null
+  }, [editor, mode])
+
+  // 滚动位置持久化：当前文档滚动时（rAF 节流）记录到 localStorage，按文档路径独立保存
+  useEffect(() => {
+    if (!scrollPositionKey) return
+    const key = `markdown-desk-scroll:${scrollPositionKey.toLowerCase().replace(/\\/g, '/')}`
+    const target = getScrollTarget()
+    if (!target) return
+    let frame = 0
+    const onScroll = () => {
+      if (frame) return
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        const max = target.scrollHeight - target.clientHeight
+        const ratio = max > 0 ? target.scrollTop / max : 0
+        try {
+          localStorage.setItem(key, String(Math.round(ratio * 10000) / 10000))
+        } catch { /* localStorage 不可用则忽略 */ }
+      })
+    }
+    target.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      target.removeEventListener('scroll', onScroll)
+      if (frame) window.cancelAnimationFrame(frame)
+    }
+  }, [scrollPositionKey, getScrollTarget])
+
+  // 滚动位置恢复：切换文档/载入内容后延时多次应用，等待图片、Mermaid 等异步渲染抬高文档高度
+  useEffect(() => {
+    if (!scrollPositionKey) return
+    let saved: number | null = null
+    try {
+      const raw = localStorage.getItem(`markdown-desk-scroll:${scrollPositionKey.toLowerCase().replace(/\\/g, '/')}`)
+      const parsed = raw == null ? Number.NaN : Number.parseFloat(raw)
+      if (Number.isFinite(parsed) && parsed > 0 && parsed < 1) saved = parsed
+    } catch { /* localStorage 不可用则忽略 */ }
+    if (saved == null) return
+
+    let cancelled = false
+    const timers: number[] = []
+    const apply = () => {
+      if (cancelled) return
+      const target = getScrollTarget()
+      if (!target) return
+      const previousBehavior = target.style.scrollBehavior
+      target.style.scrollBehavior = 'auto'
+      // 先跳到底部强制浏览器完成内容测量（content-visibility 惰性测量会导致 scrollHeight 偏低），
+      // 再按比例落位到阅读位置
+      target.scrollTop = target.scrollHeight
+      target.scrollTop = (target.scrollHeight - target.clientHeight) * saved
+      target.style.scrollBehavior = previousBehavior
+    }
+    ;[60, 300, 800, 1500, 2400].forEach((delay) => {
+      timers.push(window.setTimeout(apply, delay))
+    })
+    return () => {
+      cancelled = true
+      timers.forEach((timer) => window.clearTimeout(timer))
+    }
+  }, [scrollPositionKey, getScrollTarget])
 
   useEffect(() => () => {
     if (cursorFrameRef.current !== null) window.cancelAnimationFrame(cursorFrameRef.current)

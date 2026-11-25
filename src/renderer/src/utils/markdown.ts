@@ -87,9 +87,9 @@ export function buildExportHtml(title: string, body: string): string {
       h1 { font-size: 2.5rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.45em; }
       h2 { font-size: 1.75rem; border-bottom: 1px solid #eef0f2; padding-bottom: 0.35em; }
       blockquote { margin: 1.5em 0; border-left: 4px solid #4c83bd; padding: 0.65em 1em; color: #56616d; background: #f6f8fa; }
-      code { padding: 0.15em 0.35em; border-radius: 4px; background: #f1f3f5; font-family: "Cascadia Code", Consolas, monospace; }
-      pre { padding: 1em; overflow: auto; border-radius: 8px; background: #1f2933; color: #f7fafc; }
-      pre code { padding: 0; background: transparent; }
+      code { padding: 0.18em 0.45em; border-radius: 4px; background: #f1f3f5; font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; font-size: 0.92em; }
+      pre { padding: 1.1em 1.25em; overflow: auto; border-radius: 8px; background: #1f2933; color: #f7fafc; font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; font-size: 15px; line-height: 1.68; }
+      pre code { padding: 0; background: transparent; font-size: inherit; }
       img { max-width: 100%; height: auto; }
       table { width: 100%; border-collapse: collapse; }
       th, td { padding: 0.5em 0.75em; border: 1px solid #dfe3e8; text-align: left; }
