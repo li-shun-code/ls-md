@@ -1,4 +1,5 @@
-import { app, autoUpdater } from 'electron'
+import { app } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import type { UpdateState } from '../shared/types'
 
 export type UpdateServiceOptions = {
