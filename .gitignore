@@ -4,3 +4,8 @@ release/
 test-results/
 playwright-report/
 *.tsbuildinfo
+logs/
+.superpowers/
+.video_agent/
+.workbuddy/
+electron.vite.config.*.mjs
