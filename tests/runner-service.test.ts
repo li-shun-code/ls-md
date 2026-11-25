@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs'
 import { access, mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -189,7 +190,10 @@ describe('RunnerService', () => {
 
       const result = await runnerService.executeCode(request, cwdRunner)
       expect(result.exitCode).toBe(0)
-      expect(path.resolve(result.stdout.trim())).toBe(path.resolve(customCwd))
+      // macOS 下 /var 是 /private/var 的符号链接，用 realpath 归一化后比较
+      const actual = realpathSync(path.resolve(result.stdout.trim()))
+      const expected = realpathSync(path.resolve(customCwd))
+      expect(actual).toBe(expected)
 
       await rm(customCwd, { recursive: true, force: true })
     })
