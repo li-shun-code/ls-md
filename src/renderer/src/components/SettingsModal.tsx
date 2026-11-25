@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
+  Info,
   Loader2,
   Play,
   Plus,
@@ -15,9 +16,20 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import type { AppSettings, ExecutionRequest, RunnerDefinition } from '@shared/types'
+import type { AppSettings, ExecutionRequest, RunnerDefinition, UpdateState } from '@shared/types'
 
-export type SettingsTab = 'runners' | 'ai'
+export type SettingsTab = 'runners' | 'ai' | 'about'
+
+const UPDATE_STATUS_TEXT: Record<UpdateState['status'], string> = {
+  idle: '',
+  checking: '正在检查更新…',
+  available: '',
+  'not-available': '当前已是最新版本',
+  downloading: '',
+  downloaded: '',
+  error: '',
+  unsupported: '当前环境不支持在线升级（仅支持 Windows 安装版）',
+}
 
 export type SettingsModalProps = {
   open: boolean
@@ -147,6 +159,29 @@ export function SettingsModal({
     } finally {
       setIsDetecting(false)
     }
+  }, [])
+
+  // 在线升级：进入设置弹窗时同步一次状态，并持续订阅后续变化
+  const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' })
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    void window.desktop.getUpdateState().then(setUpdateState).catch(() => undefined)
+    return window.desktop.onUpdateState(setUpdateState)
+  }, [open])
+
+  const handleCheckUpdate = useCallback(async () => {
+    setIsCheckingUpdate(true)
+    try {
+      setUpdateState(await window.desktop.checkForUpdates())
+    } finally {
+      setIsCheckingUpdate(false)
+    }
+  }, [])
+
+  const handleInstallUpdate = useCallback(() => {
+    void window.desktop.installUpdate()
   }, [])
 
   useEffect(() => {
@@ -519,6 +554,16 @@ export function SettingsModal({
             <Sparkles size={15} strokeWidth={2} aria-hidden="true" />
             <span>AI 助手模型</span>
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'about'}
+            className={`settings-modal-tab${activeTab === 'about' ? ' is-active' : ''}`}
+            onClick={() => setActiveTab('about')}
+          >
+            <Info size={15} strokeWidth={2} aria-hidden="true" />
+            <span>关于与更新</span>
+          </button>
         </div>
 
         <div className="settings-modal-body">
@@ -850,6 +895,82 @@ export function SettingsModal({
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {activeTab === 'about' && (
+            <div className="settings-about-tab">
+              <p className="settings-section-desc">
+                应用启动时会自动检查新版本。新版本会从 GitHub Releases 下载，下载完成后由你确认重启安装，不会打断当前编辑。
+              </p>
+              <div className="settings-runners-toolbar-actions">
+                <button
+                  type="button"
+                  className="settings-modal-btn settings-detect-btn"
+                  onClick={() => void handleCheckUpdate()}
+                  disabled={isCheckingUpdate || updateState.status === 'downloading'}
+                >
+                  <RefreshCw
+                    size={14}
+                    className={isCheckingUpdate || updateState.status === 'checking' ? 'settings-spin' : ''}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {isCheckingUpdate || updateState.status === 'checking' ? '正在检查更新…' : '检查更新'}
+                  </span>
+                </button>
+                {updateState.status === 'downloaded' && (
+                  <button
+                    type="button"
+                    className="settings-modal-btn is-primary"
+                    onClick={handleInstallUpdate}
+                  >
+                    <CheckCircle2 size={14} aria-hidden="true" />
+                    <span>立即重启安装 v{updateState.version}</span>
+                  </button>
+                )}
+              </div>
+              {UPDATE_STATUS_TEXT[updateState.status] && (
+                <div className="settings-ai-test-result is-success">
+                  <Info size={15} strokeWidth={2} aria-hidden="true" />
+                  <span>{UPDATE_STATUS_TEXT[updateState.status]}</span>
+                </div>
+              )}
+              {updateState.status === 'available' && (
+                <div className="settings-ai-test-result is-success">
+                  <CheckCircle2 size={15} strokeWidth={2} aria-hidden="true" />
+                  <span>发现新版本 v{updateState.version}，正在后台下载…</span>
+                </div>
+              )}
+              {updateState.status === 'downloading' && (
+                <div className="settings-about-progress">
+                  <div className="settings-about-progress-text">
+                    正在下载新版本 v{updateState.version}… {updateState.percent ?? 0}%
+                  </div>
+                  <div className="settings-about-progress-bar">
+                    <div
+                      className="settings-about-progress-fill"
+                      style={{ width: `${updateState.percent ?? 0}%` }}
+                      role="progressbar"
+                      aria-valuenow={updateState.percent ?? 0}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                    />
+                  </div>
+                </div>
+              )}
+              {updateState.status === 'downloaded' && (
+                <div className="settings-ai-test-result is-success">
+                  <CheckCircle2 size={15} strokeWidth={2} aria-hidden="true" />
+                  <span>新版本 v{updateState.version} 已下载完成，可重启安装</span>
+                </div>
+              )}
+              {updateState.status === 'error' && (
+                <div className="settings-ai-test-result is-error">
+                  <AlertTriangle size={15} strokeWidth={2} aria-hidden="true" />
+                  <span>{updateState.error}</span>
+                </div>
+              )}
             </div>
           )}
         </div>

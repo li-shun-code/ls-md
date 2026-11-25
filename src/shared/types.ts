@@ -170,6 +170,24 @@ export type MenuCommand =
   | 'help.welcomeDocument'
   | 'settings.open'
 
+export type UpdateState = {
+  status:
+    | 'idle'
+    | 'checking'
+    | 'available'
+    | 'not-available'
+    | 'downloading'
+    | 'downloaded'
+    | 'error'
+    | 'unsupported'
+  /** 新版本号（available / downloading / downloaded 时存在） */
+  version?: string
+  /** 下载进度百分比（downloading 时存在） */
+  percent?: number
+  /** 失败原因（error 时存在） */
+  error?: string
+}
+
 export type DesktopBridge = {
   chooseWorkspace: () => Promise<string | null>
   openMarkdownDialog: () => Promise<void>
@@ -202,6 +220,10 @@ export type DesktopBridge = {
   detectEnvironments: (forceRefresh?: boolean) => Promise<Record<string, { available: boolean; path?: string; version?: string }>>
   executeCode: (request: ExecutionRequest) => Promise<ExecutionResult>
   cancelExecution: (executionId: string) => Promise<boolean>
+  checkForUpdates: () => Promise<UpdateState>
+  installUpdate: () => Promise<void>
+  getUpdateState: () => Promise<UpdateState>
+  onUpdateState: (callback: (state: UpdateState) => void) => () => void
   onAiStream: (callback: (event: AiStreamEvent) => void) => () => void
   onMenuCommand: (callback: (command: MenuCommand) => void) => () => void
   onWorkspaceSelected: (callback: (selection: WorkspaceSelection) => void) => () => void

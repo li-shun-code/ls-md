@@ -3403,3 +3403,68 @@ kbd {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* ============ 在线升级 ============ */
+.update-banner {
+  position: fixed;
+  z-index: 60;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+}
+
+.update-banner-text {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.update-banner-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.update-banner-btn:hover {
+  background: var(--surface-hover, rgba(128, 128, 128, 0.12));
+}
+
+.update-banner-btn.is-primary {
+  color: #fff;
+  background: var(--accent, #4a7dff);
+  border-color: var(--accent, #4a7dff);
+}
+
+.settings-about-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.settings-about-progress-bar {
+  height: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.settings-about-progress-fill {
+  height: 100%;
+  background: var(--accent, #4a7dff);
+  transition: width 0.3s ease;
+}

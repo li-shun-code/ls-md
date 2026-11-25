@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type WheelEvent } from 'react'
 import { AlertTriangle, ChevronLeft, Code2, FolderOpen, PanelLeft, Search, Settings, Sparkles } from 'lucide-react'
-import type { AiOperation, FileNode, MenuCommand, MarkdownMode, OpenedDocument, RecoverySnapshot, WorkspaceSelection } from '@shared/types'
+import type { AiOperation, FileNode, MenuCommand, MarkdownMode, OpenedDocument, RecoverySnapshot, UpdateState, WorkspaceSelection } from '@shared/types'
 import { FileTree } from '@renderer/components/FileTree'
 import { IconButton } from '@renderer/components/IconButton'
 import { MarkdownEditor, type EditorCommands, type EditorPreview } from '@renderer/components/MarkdownEditor'
@@ -50,6 +50,8 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('runners')
   const [runnerDialog, setRunnerDialog] = useState<{ language: string; code: string; workingDirectory?: string } | null>(null)
+  const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' })
+  const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false)
 
   const deferredMarkdown = useDeferredValue(markdown)
   const outline = useMemo(() => extractOutline(deferredMarkdown), [deferredMarkdown])
@@ -73,6 +75,17 @@ export function App() {
   const handleOpenSettings = useCallback((tab: SettingsTab = 'runners') => {
     setSettingsTab(tab)
     setSettingsOpen(true)
+  }, [])
+
+  // 在线升级：订阅主进程状态；发现新版本时提示用户（用户确认后才下载/安装）
+  useEffect(() => {
+    void window.desktop.getUpdateState().then(setUpdateState).catch(() => undefined)
+    return window.desktop.onUpdateState((state) => {
+      setUpdateState(state)
+      if (state.status === 'available' || state.status === 'downloaded') {
+        setUpdateBannerDismissed(false)
+      }
+    })
   }, [])
 
   const toggleSidebar = useCallback(() => {
@@ -980,6 +993,45 @@ export function App() {
         onClose={() => setSettingsOpen(false)}
         onSettingsSaved={() => showNotice('设置已保存并生效')}
       />
+
+      {(updateState.status === 'available' ||
+        updateState.status === 'downloading' ||
+        updateState.status === 'downloaded') &&
+        !updateBannerDismissed && (
+          <div className="update-banner" role="status">
+            <span className="update-banner-text">
+              {updateState.status === 'available' && `发现新版本 v${updateState.version}，正在后台下载…`}
+              {updateState.status === 'downloading' &&
+                `正在下载新版本 v${updateState.version}… ${updateState.percent ?? 0}%`}
+              {updateState.status === 'downloaded' && `新版本 v${updateState.version} 已就绪`}
+            </span>
+            {updateState.status === 'downloaded' ? (
+              <button
+                type="button"
+                className="update-banner-btn is-primary"
+                onClick={() => void window.desktop.installUpdate()}
+              >
+                立即重启安装
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="update-banner-btn"
+                onClick={() => handleOpenSettings('about')}
+              >
+                查看详情
+              </button>
+            )}
+            <button
+              type="button"
+              className="update-banner-btn"
+              aria-label="关闭更新提示"
+              onClick={() => setUpdateBannerDismissed(true)}
+            >
+              稍后
+            </button>
+          </div>
+        )}
 
       {runnerDialog && (
         <CodeRunnerDialog

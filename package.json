@@ -17,6 +17,7 @@
     "test:e2e": "playwright test",
     "lint": "eslint . --max-warnings=0",
     "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:win:publish": "npm run build && electron-builder --win --publish always",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
     "dist:all": "npm run build && electron-builder -mw --publish never"
   },
@@ -41,6 +42,7 @@
     "@tiptap/react": "3.30.5",
     "@tiptap/starter-kit": "3.30.5",
     "codemirror": "^6.0.2",
+    "electron-updater": "^6.8.11",
     "highlight.js": "11.12.0",
     "katex": "0.18.4",
     "lowlight": "3.3.0",
@@ -74,6 +76,11 @@
     "appId": "com.markdowndesk.app",
     "productName": "墨笺",
     "icon": "build/icon.ico",
+    "publish": {
+      "provider": "github",
+      "owner": "li-shun-code",
+      "repo": "ls-md"
+    },
     "directories": {
       "output": "release"
     },

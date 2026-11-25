@@ -5,6 +5,7 @@ import type {
   OpenedDocument,
   RecoverySnapshot,
   WorkspaceSelection,
+  UpdateState,
 } from '../shared/types'
 
 const desktopBridge: DesktopBridge = {
@@ -39,6 +40,10 @@ const desktopBridge: DesktopBridge = {
   detectEnvironments: (forceRefresh?: boolean) => ipcRenderer.invoke('runner:detect-env', forceRefresh),
   executeCode: (request) => ipcRenderer.invoke('runner:execute', request),
   cancelExecution: (id) => ipcRenderer.invoke('runner:cancel', id),
+  checkForUpdates: () => ipcRenderer.invoke('update:check') as Promise<UpdateState>,
+  installUpdate: () => ipcRenderer.invoke('update:install') as Promise<void>,
+  getUpdateState: () => ipcRenderer.invoke('update:get-state') as Promise<UpdateState>,
+  onUpdateState: (callback) => subscribe<UpdateState>('update-state', callback),
   onAiStream: (callback) => subscribe<AiStreamEvent>('ai-stream', callback),
   onMenuCommand: (callback) => subscribe('menu-command', callback),
   onWorkspaceSelected: (callback) => subscribe('workspace-selected', callback),

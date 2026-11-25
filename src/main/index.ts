@@ -1,4 +1,4 @@
-import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeTheme, shell, webContents } from 'electron'
 import { watch, type FSWatcher } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -20,6 +20,7 @@ import { RecentService } from './recent-service'
 import { RecoveryService } from './recovery-service'
 import { SettingsService } from './settings-service'
 import { RunnerService } from './runner-service'
+import { UpdateService } from './update-service'
 import { initAppLogger } from './logger'
 import type {
   AiRequest,
@@ -39,6 +40,7 @@ let recentService: RecentService
 let aiService: AiService
 let settingsService: SettingsService
 let runnerService: RunnerService
+let updateService: UpdateService
 
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-gpu')
@@ -724,6 +726,21 @@ function registerIpc(): void {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
     return runnerService.cancel(executionId)
   })
+
+  ipcMain.handle('update:check', async (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return updateService.check()
+  })
+
+  ipcMain.handle('update:install', (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    updateService.install()
+  })
+
+  ipcMain.handle('update:get-state', (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return updateService.getState()
+  })
 }
 
 app.whenReady().then(async () => {
@@ -741,6 +758,15 @@ app.whenReady().then(async () => {
     aiService = new AiService(app.getPath('userData'))
     settingsService = new SettingsService(app.getPath('userData'))
     runnerService = new RunnerService()
+    updateService = new UpdateService({
+      broadcast: (state) => {
+        for (const contents of webContents.getAllWebContents()) {
+          contents.send('update-state', state)
+        }
+      },
+      log: (level, message, meta) => appLogger[level](message, meta),
+    })
+    updateService.scheduleAutoCheck()
     registerIpc()
     const initialPath = pendingOpenPath
     pendingOpenPath = null
