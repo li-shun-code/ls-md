@@ -118,16 +118,16 @@
         }
       ],
       "signAndEditExecutable": false,
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "Mojian-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "artifactName": "${productName}-${version}-${arch}-Setup.${ext}"
+      "artifactName": "Mojian-${version}-${arch}-Setup.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-${arch}-Portable.${ext}"
+      "artifactName": "Mojian-${version}-${arch}-Portable.${ext}"
     },
     "mac": {
       "target": [
@@ -135,13 +135,13 @@
         "zip"
       ],
       "icon": "build/icon.png",
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "artifactName": "Mojian-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.productivity",
       "darkModeSupport": true,
       "identity": null
     },
     "dmg": {
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+      "artifactName": "Mojian-${version}-mac-${arch}.${ext}"
     }
   }
 }
