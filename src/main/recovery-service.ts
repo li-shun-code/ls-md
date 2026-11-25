@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { RecoverySnapshot } from '../shared/types'
 
@@ -23,7 +23,20 @@ export class RecoveryService {
   public async read(documentPath: string): Promise<RecoverySnapshot | null> {
     try {
       const content = await readFile(this.filePath(documentPath), 'utf8')
-      return JSON.parse(content) as RecoverySnapshot
+      const snapshot = JSON.parse(content) as RecoverySnapshot
+
+      // 时效性检查：如果磁盘原文件存在且已被更新（修改时间晚于快照创建时间），说明快照已过时，自动静默清除
+      try {
+        const fileStat = await stat(path.resolve(documentPath))
+        if (fileStat.mtimeMs >= snapshot.createdAt) {
+          await this.clear(documentPath)
+          return null
+        }
+      } catch {
+        // 原文件可能已被删除或暂不可达，保留快照以防数据丢失
+      }
+
+      return snapshot
     } catch {
       return null
     }

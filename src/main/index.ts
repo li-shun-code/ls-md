@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { watch, type FSWatcher } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -33,21 +33,21 @@ import type {
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url))
 const isPrimaryInstance = app.requestSingleInstanceLock()
-let mainWindow: BrowserWindow | null = null
-let workspaceRoot: string | null = null
+let pendingOpenPath: string | null = findMarkdownArgument(process.argv)
 let recoveryService: RecoveryService
 let recentService: RecentService
 let aiService: AiService
 let settingsService: SettingsService
 let runnerService: RunnerService
-let watchedFile: string | null = null
-let fileWatcher: FSWatcher | null = null
-let pendingOpenPath: string | null = findMarkdownArgument(process.argv)
 
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-gpu')
 app.commandLine.appendSwitch('disable-gpu-compositing')
 // 注意：曾使用 in-process-gpu，与 sandbox:false 组合在部分驱动下会扩大渲染进程原生崩溃面（切换文档易触发），故移除。
+
+// 本机转储原生崩溃 minidump（不联网上传），结合日志共同确保异常有迹可查：
+// 转储位置 = app.getPath('crashDumps')（默认 userData/Crashpad/reports）
+crashReporter.start({ submitURL: '', uploadToServer: false })
 
 // 日志：优先安装目录，写入失败自动回退用户数据目录（见 logger.ts）
 const appLogger = initAppLogger(
@@ -73,48 +73,74 @@ function findMarkdownArgument(args: string[]): string | null {
   return argument ? path.resolve(argument) : null
 }
 
-function isTrustedSender(sender: Electron.WebContents): boolean {
-  return mainWindow !== null && sender === mainWindow.webContents
+// ============================================================================
+// 单进程多窗口：每个 BrowserWindow 拥有独立的工作区/文档监视状态，
+// 从而支持同时打开多个 md 文件（各占一个窗口）。
+// ============================================================================
+
+type WindowState = {
+  window: BrowserWindow
+  workspaceRoot: string | null
+  workspaceWatcher: FSWatcher | null
+  workspaceDebounceTimer: NodeJS.Timeout | null
+  watchedFile: string | null
+  fileWatcher: FSWatcher | null
+  lastSelfWriteTime: number
+  lastSelfWritePath: string
+  documentDebounceTimer: NodeJS.Timeout | null
 }
 
-let workspaceWatcher: FSWatcher | null = null
-let workspaceDebounceTimer: NodeJS.Timeout | null = null
-let lastSelfWriteTime = 0
-let lastSelfWritePath = ''
-let documentDebounceTimer: NodeJS.Timeout | null = null
+const windowStates = new Map<number, WindowState>()
 
-function watchDocument(filePath: string): void {
-  fileWatcher?.close()
-  if (documentDebounceTimer) clearTimeout(documentDebounceTimer)
+function stateForSender(sender: Electron.WebContents): WindowState | null {
+  return windowStates.get(sender.id) ?? null
+}
+
+function getFocusedState(): WindowState | null {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused) {
+    const byFocused = windowStates.get(focused.webContents.id)
+    if (byFocused) return byFocused
+  }
+  return windowStates.values().next().value ?? null
+}
+
+function isTrustedSender(sender: Electron.WebContents): boolean {
+  return stateForSender(sender) !== null
+}
+
+function watchDocument(filePath: string, state: WindowState): void {
+  state.fileWatcher?.close()
+  if (state.documentDebounceTimer) clearTimeout(state.documentDebounceTimer)
   const resolvedPath = path.resolve(filePath)
-  watchedFile = resolvedPath
-  fileWatcher = watch(watchedFile, { persistent: false }, () => {
-    if (documentDebounceTimer) clearTimeout(documentDebounceTimer)
-    documentDebounceTimer = setTimeout(() => {
+  state.watchedFile = resolvedPath
+  state.fileWatcher = watch(resolvedPath, { persistent: false }, () => {
+    if (state.documentDebounceTimer) clearTimeout(state.documentDebounceTimer)
+    state.documentDebounceTimer = setTimeout(() => {
       // 避免自身保存操作引发的虚假外部更新广播
-      if (resolvedPath === lastSelfWritePath && Date.now() - lastSelfWriteTime < 1200) {
+      if (resolvedPath === state.lastSelfWritePath && Date.now() - state.lastSelfWriteTime < 1200) {
         return
       }
-      if (mainWindow && watchedFile === resolvedPath) {
-        mainWindow.webContents.send('file-changed', watchedFile)
+      if (state.window && !state.window.isDestroyed() && state.watchedFile === resolvedPath) {
+        state.window.webContents.send('file-changed', resolvedPath)
       }
     }, 200)
 
     setTimeout(() => {
-      if (watchedFile === resolvedPath) {
-        try { watchDocument(resolvedPath) } catch { /* 文件可能已被删除 */ }
+      if (state.watchedFile === resolvedPath) {
+        try { watchDocument(resolvedPath, state) } catch { /* 文件可能已被删除 */ }
       }
     }, 250)
   })
 }
 
-function watchWorkspace(root: string): void {
-  workspaceWatcher?.close()
-  workspaceWatcher = null
+function watchWorkspace(root: string, state: WindowState): void {
+  state.workspaceWatcher?.close()
+  state.workspaceWatcher = null
   if (!root) return
 
   try {
-    workspaceWatcher = watch(root, { recursive: true, persistent: false }, (_eventType, filename) => {
+    state.workspaceWatcher = watch(root, { recursive: true, persistent: false }, (_eventType, filename) => {
       if (filename && (
         filename.includes('.git') ||
         filename.includes('node_modules') ||
@@ -125,12 +151,12 @@ function watchWorkspace(root: string): void {
         return
       }
 
-      if (workspaceDebounceTimer) clearTimeout(workspaceDebounceTimer)
-      workspaceDebounceTimer = setTimeout(async () => {
-        if (!mainWindow || !workspaceRoot) return
+      if (state.workspaceDebounceTimer) clearTimeout(state.workspaceDebounceTimer)
+      state.workspaceDebounceTimer = setTimeout(async () => {
+        if (!state.window || state.window.isDestroyed() || !state.workspaceRoot) return
         try {
-          const tree = await listWorkspace(workspaceRoot)
-          sendWorkspaceSelection(tree)
+          const tree = await listWorkspace(state.workspaceRoot)
+          sendWorkspaceSelection(tree, state)
         } catch {
           // ignore transient scan errors
         }
@@ -141,66 +167,28 @@ function watchWorkspace(root: string): void {
   }
 }
 
-function setAndWatchWorkspace(root: string | null): void {
+function setAndWatchWorkspace(root: string | null, state: WindowState): void {
   if (!root) {
-    workspaceRoot = null
-    workspaceWatcher?.close()
-    workspaceWatcher = null
+    state.workspaceRoot = null
+    state.workspaceWatcher?.close()
+    state.workspaceWatcher = null
     return
   }
   const resolved = path.resolve(root)
-  workspaceRoot = resolved
-  watchWorkspace(resolved)
+  state.workspaceRoot = resolved
+  watchWorkspace(resolved, state)
 }
 
-function sendWorkspaceSelection(tree: WorkspaceSelection['tree']): void {
-  if (mainWindow && workspaceRoot) {
-    mainWindow.webContents.send('workspace-selected', { root: workspaceRoot, tree })
+function sendWorkspaceSelection(tree: WorkspaceSelection['tree'], state: WindowState): void {
+  if (state.window && !state.window.isDestroyed() && state.workspaceRoot) {
+    state.window.webContents.send('workspace-selected', { root: state.workspaceRoot, tree })
   }
 }
 
-async function chooseWorkspace(): Promise<string | null> {
-  if (!mainWindow) {
-    return null
-  }
-
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory'],
-    title: '选择 Markdown 工作区',
-  })
-  if (result.canceled || !result.filePaths[0]) {
-    return null
-  }
-
-  setAndWatchWorkspace(result.filePaths[0])
-  if (workspaceRoot) {
-    const tree = await listWorkspace(workspaceRoot)
-    sendWorkspaceSelection(tree)
-  }
-  return workspaceRoot
-}
-
-async function openMarkdownDialog(): Promise<void> {
-  if (!mainWindow) {
-    return
-  }
-
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openFile'],
-    filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'mdown', 'mkd'] }],
-    title: '打开 Markdown 文件',
-  })
-  const selectedPath = result.filePaths[0]
-  if (result.canceled || !selectedPath || !isMarkdownPath(selectedPath)) {
-    return
-  }
-
-  await openMarkdownFile(selectedPath)
-}
-
+// 注意：buildApplicationMenu 依赖路径可能因使用场景不同而改变，这里广播的主管线保持稳定。
 async function updateApplicationMenu(): Promise<void> {
   const recentFiles = recentService ? await recentService.getRecentFiles() : []
-  const menu = buildApplicationMenu(() => mainWindow, {
+  const menu = buildApplicationMenu(() => getFocusedState()?.window ?? null, {
     recentFiles,
     onOpenRecent: (filePath) => {
       void openMarkdownFile(filePath)
@@ -215,30 +203,84 @@ async function updateApplicationMenu(): Promise<void> {
   Menu.setApplicationMenu(menu)
 }
 
-async function openMarkdownFile(filePath: string): Promise<void> {
-  if (!isMarkdownPath(filePath)) return
-  if (!mainWindow) {
-    pendingOpenPath = path.resolve(filePath)
+async function openMarkdownDialog(state: WindowState): Promise<void> {
+  if (!state.window || state.window.isDestroyed()) {
     return
   }
 
+  const result = await dialog.showOpenDialog(state.window, {
+    properties: ['openFile'],
+    filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'mdown', 'mkd'] }],
+    title: '打开 Markdown 文件',
+  })
+  const selectedPath = result.filePaths[0]
+  if (result.canceled || !selectedPath || !isMarkdownPath(selectedPath)) {
+    return
+  }
+
+  await openMarkdownFile(selectedPath, state)
+}
+
+async function chooseWorkspace(state: WindowState): Promise<string | null> {
+  if (!state.window || state.window.isDestroyed()) {
+    return null
+  }
+
+  const result = await dialog.showOpenDialog(state.window, {
+    properties: ['openDirectory'],
+    title: '选择 Markdown 工作区',
+  })
+  if (result.canceled || !result.filePaths[0]) {
+    return null
+  }
+
+  setAndWatchWorkspace(result.filePaths[0], state)
+  if (state.workspaceRoot) {
+    const tree = await listWorkspace(state.workspaceRoot)
+    sendWorkspaceSelection(tree, state)
+  }
+  return state.workspaceRoot
+}
+
+/**
+ * 打开 Markdown 文件（单进程多窗口语义）：
+ * - 未指定目标窗口时：若某窗口已打开同一文件则聚焦复用；否则新建窗口承载该文件（多开）。
+ * - 指定目标窗口时：在目标窗口内打开（菜单/对话框/文件树导航）。
+ */
+async function openMarkdownFile(filePath: string, targetState?: WindowState | null): Promise<void> {
+  if (!isMarkdownPath(filePath)) return
   const resolvedPath = path.resolve(filePath)
-  if (!workspaceRoot || !resolvedPath.toLowerCase().startsWith(workspaceRoot.toLowerCase())) {
-    setAndWatchWorkspace(path.dirname(resolvedPath))
+
+  if (!targetState) {
+    const existing = [...windowStates.values()].find((candidate) => candidate.watchedFile === resolvedPath)
+    if (existing) {
+      if (existing.window.isMinimized()) existing.window.restore()
+      existing.window.focus()
+      return
+    }
+    await createWindow(resolvedPath)
+    return
+  }
+
+  const state = targetState
+  if (!state.workspaceRoot || !resolvedPath.toLowerCase().startsWith(state.workspaceRoot.toLowerCase())) {
+    setAndWatchWorkspace(path.dirname(resolvedPath), state)
   }
   try {
-    const content = await readMarkdown(workspaceRoot || path.dirname(resolvedPath), resolvedPath)
-    watchDocument(resolvedPath)
-    mainWindow.webContents.send('document-opened', { path: resolvedPath, content } satisfies OpenedDocument)
+    const content = await readMarkdown(state.workspaceRoot || path.dirname(resolvedPath), resolvedPath)
+    watchDocument(resolvedPath, state)
+    if (!state.window.isDestroyed()) {
+      state.window.webContents.send('document-opened', { path: resolvedPath, content } satisfies OpenedDocument)
+    }
     appLogger.info('打开 Markdown 文档', { path: resolvedPath })
     if (recentService) {
       await recentService.addRecentFile(resolvedPath)
       await updateApplicationMenu()
     }
-    if (workspaceRoot) {
+    if (state.workspaceRoot) {
       try {
-        const tree = await listWorkspace(workspaceRoot)
-        sendWorkspaceSelection(tree)
+        const tree = await listWorkspace(state.workspaceRoot)
+        sendWorkspaceSelection(tree, state)
       } catch {
         // 工作区目录扫描失败时（如系统临时目录权限限制），不影响当前文档正常打开
       }
@@ -250,8 +292,8 @@ async function openMarkdownFile(filePath: string): Promise<void> {
     }
     const message = error instanceof Error ? error.message : String(error)
     appLogger.error('打开 Markdown 文档失败', { path: resolvedPath, message })
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      dialog.showMessageBox(mainWindow, {
+    if (state.window && !state.window.isDestroyed()) {
+      dialog.showMessageBox(state.window, {
         type: 'warning',
         title: '无法打开文件',
         message: `无法打开 Markdown 文件：\n${resolvedPath}\n\n原因：${message}`,
@@ -260,7 +302,7 @@ async function openMarkdownFile(filePath: string): Promise<void> {
   }
 }
 
-async function createWindow(): Promise<void> {
+async function createWindow(initialPath: string | null = null): Promise<WindowState> {
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -275,17 +317,28 @@ async function createWindow(): Promise<void> {
       sandbox: false,
     },
   })
-  mainWindow = window
+  const windowId = window.webContents.id
+  const state: WindowState = {
+    window,
+    workspaceRoot: null,
+    workspaceWatcher: null,
+    workspaceDebounceTimer: null,
+    watchedFile: null,
+    fileWatcher: null,
+    lastSelfWriteTime: 0,
+    lastSelfWritePath: '',
+    documentDebounceTimer: null,
+  }
+  windowStates.set(windowId, state)
 
   window.on('closed', () => {
-    if (mainWindow !== window) return
-    fileWatcher?.close()
-    fileWatcher = null
-    workspaceWatcher?.close()
-    workspaceWatcher = null
-    watchedFile = null
-    aiService?.cancelAll()
-    mainWindow = null
+    windowStates.delete(windowId)
+    if (state.documentDebounceTimer) clearTimeout(state.documentDebounceTimer)
+    if (state.workspaceDebounceTimer) clearTimeout(state.workspaceDebounceTimer)
+    state.fileWatcher?.close()
+    state.workspaceWatcher?.close()
+    state.watchedFile = null
+    state.workspaceRoot = null
   })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -301,14 +354,14 @@ async function createWindow(): Promise<void> {
       exitCode: details.exitCode,
       pid: details.pid,
     })
-    if (details.reason !== 'clean-exit' && mainWindow && !mainWindow.isDestroyed()) {
-      dialog.showMessageBox(mainWindow, {
+    if (details.reason !== 'clean-exit' && window && !window.isDestroyed()) {
+      dialog.showMessageBox(window, {
         type: 'error',
         title: '编辑窗口异常中断',
         message: `编辑器渲染进程异常终止 (${details.reason})，即将自动重新加载以恢复编辑区。`,
       }).then(() => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.reload()
+        if (window && !window.isDestroyed()) {
+          window.reload()
         }
       }).catch(() => undefined)
     }
@@ -317,11 +370,24 @@ async function createWindow(): Promise<void> {
     appLogger.error('渲染进程无响应（unresponsive）', { pid: window.webContents.getOSProcessId() })
   })
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    await window.loadURL(process.env.ELECTRON_RENDERER_URL)
-  } else {
-    await window.loadFile(path.join(currentDirectory, '../renderer/index.html'))
+  try {
+    if (process.env.ELECTRON_RENDERER_URL) {
+      await window.loadURL(process.env.ELECTRON_RENDERER_URL)
+    } else {
+      await window.loadFile(path.join(currentDirectory, '../renderer/index.html'))
+    }
+  } catch (error) {
+    appLogger.error('窗口加载失败', { message: error instanceof Error ? error.message : String(error) })
   }
+
+  if (initialPath) {
+    // 等待渲染进程完成挂载并注册 IPC 监听，避免 document-opened 事件在订阅前到达而丢失
+    setTimeout(() => {
+      if (window.isDestroyed()) return
+      void openMarkdownFile(initialPath, state)
+    }, 150)
+  }
+  return state
 }
 
 const LANGUAGE_ALIASES: Record<string, string> = {
@@ -338,15 +404,17 @@ const LANGUAGE_ALIASES: Record<string, string> = {
 
 function registerIpc(): void {
   ipcMain.handle('workspace:choose', async (event) => {
-    if (!isTrustedSender(event.sender)) return null
-    return chooseWorkspace()
+    const state = stateForSender(event.sender)
+    if (!state) return null
+    return chooseWorkspace(state)
   })
 
   ipcMain.handle('workspace:list', async (event, root: string) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
-    setAndWatchWorkspace(root)
-    if (!workspaceRoot) return []
-    return listWorkspace(workspaceRoot)
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
+    setAndWatchWorkspace(root, state)
+    if (!state.workspaceRoot) return []
+    return listWorkspace(state.workspaceRoot)
   })
 
   ipcMain.handle('file:show-in-folder', async (event, filePath: string) => {
@@ -355,72 +423,79 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('file:rename', async (event, oldPath: string, newName: string) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
     const resolvedOld = path.resolve(oldPath)
     const resolvedNew = await renameNode(resolvedOld, newName)
-    if (watchedFile === resolvedOld) {
-      watchDocument(resolvedNew)
+    if (state.watchedFile === resolvedOld) {
+      watchDocument(resolvedNew, state)
     }
     if (recentService) {
       await recentService.removeRecentFile(resolvedOld)
       await recentService.addRecentFile(resolvedNew)
       await updateApplicationMenu()
     }
-    if (workspaceRoot) {
-      const tree = await listWorkspace(workspaceRoot)
-      sendWorkspaceSelection(tree)
+    if (state.workspaceRoot) {
+      const tree = await listWorkspace(state.workspaceRoot)
+      sendWorkspaceSelection(tree, state)
     }
     return resolvedNew
   })
 
   ipcMain.handle('file:trash', async (event, filePath: string) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
     const resolved = path.resolve(filePath)
     await shell.trashItem(resolved)
     if (recentService) {
       await recentService.removeRecentFile(resolved)
       await updateApplicationMenu()
     }
-    if (workspaceRoot) {
-      const tree = await listWorkspace(workspaceRoot)
-      sendWorkspaceSelection(tree)
+    if (state.workspaceRoot) {
+      const tree = await listWorkspace(state.workspaceRoot)
+      sendWorkspaceSelection(tree, state)
     }
     return true
   })
 
   ipcMain.handle('file:create-file', async (event, directoryPath: string, fileName: string) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
     const created = await createMarkdownFile(directoryPath, fileName)
-    if (workspaceRoot) {
-      const tree = await listWorkspace(workspaceRoot)
-      sendWorkspaceSelection(tree)
+    if (state.workspaceRoot) {
+      const tree = await listWorkspace(state.workspaceRoot)
+      sendWorkspaceSelection(tree, state)
     }
     return created
   })
 
   ipcMain.handle('file:create-folder', async (event, directoryPath: string, folderName: string) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
     const created = await createDirectory(directoryPath, folderName)
-    if (workspaceRoot) {
-      const tree = await listWorkspace(workspaceRoot)
-      sendWorkspaceSelection(tree)
+    if (state.workspaceRoot) {
+      const tree = await listWorkspace(state.workspaceRoot)
+      sendWorkspaceSelection(tree, state)
     }
     return created
   })
 
   ipcMain.handle('file:open-dialog', async (event) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
-    await openMarkdownDialog()
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
+    await openMarkdownDialog(state)
   })
 
   ipcMain.handle('file:open-path', async (event, filePath: string) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
-    await openMarkdownFile(filePath)
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
+    await openMarkdownFile(filePath, state)
   })
 
   ipcMain.handle('file:resolve-path', async (event, baseDir: string, targetPath: string) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
-    return resolveLinkedDocument(baseDir, targetPath, workspaceRoot)
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
+    return resolveLinkedDocument(baseDir, targetPath, state.workspaceRoot)
   })
 
   ipcMain.handle('system:open-external', async (event, url: string) => {
@@ -433,13 +508,14 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('file:read', async (event, filePath: string) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
     const resolvedPath = path.resolve(filePath)
-    if (!workspaceRoot) {
-      workspaceRoot = path.dirname(resolvedPath)
+    if (!state.workspaceRoot) {
+      state.workspaceRoot = path.dirname(resolvedPath)
     }
-    const content = await readMarkdown(workspaceRoot, resolvedPath)
-    watchDocument(resolvedPath)
+    const content = await readMarkdown(state.workspaceRoot, resolvedPath)
+    watchDocument(resolvedPath, state)
     if (recentService) {
       await recentService.addRecentFile(resolvedPath)
       await updateApplicationMenu()
@@ -448,15 +524,16 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('file:write', async (event, filePath: string, content: string) => {
-    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
     const resolvedPath = path.resolve(filePath)
-    if (!workspaceRoot) {
-      workspaceRoot = path.dirname(resolvedPath)
+    if (!state.workspaceRoot) {
+      state.workspaceRoot = path.dirname(resolvedPath)
     }
-    lastSelfWritePath = resolvedPath
-    lastSelfWriteTime = Date.now()
-    await writeMarkdown(workspaceRoot, resolvedPath, content)
-    watchDocument(resolvedPath)
+    state.lastSelfWritePath = resolvedPath
+    state.lastSelfWriteTime = Date.now()
+    await writeMarkdown(state.workspaceRoot, resolvedPath, content)
+    watchDocument(resolvedPath, state)
     if (recentService) {
       await recentService.addRecentFile(resolvedPath)
       await updateApplicationMenu()
@@ -464,19 +541,20 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('file:save-as', async (event, sourcePath: string, content: string) => {
-    if (!isTrustedSender(event.sender) || !mainWindow) throw new Error('未授权的请求')
-    const result = await dialog.showSaveDialog(mainWindow, {
+    const state = stateForSender(event.sender)
+    if (!state || state.window.isDestroyed()) throw new Error('未授权的请求')
+    const result = await dialog.showSaveDialog(state.window, {
       defaultPath: sourcePath,
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     })
     if (result.canceled || !result.filePath) return null
 
     const targetPath = path.resolve(isMarkdownPath(result.filePath) ? result.filePath : `${result.filePath}.md`)
-    workspaceRoot = path.dirname(targetPath)
-    lastSelfWritePath = targetPath
-    lastSelfWriteTime = Date.now()
-    await writeMarkdown(workspaceRoot, targetPath, content)
-    watchDocument(targetPath)
+    state.workspaceRoot = path.dirname(targetPath)
+    state.lastSelfWritePath = targetPath
+    state.lastSelfWriteTime = Date.now()
+    await writeMarkdown(state.workspaceRoot, targetPath, content)
+    watchDocument(targetPath, state)
     if (recentService) {
       await recentService.addRecentFile(targetPath)
       await updateApplicationMenu()
@@ -503,9 +581,10 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('file:export-html', async (event, sourcePath: string, html: string) => {
-    if (!isTrustedSender(event.sender) || !mainWindow) return false
+    const state = stateForSender(event.sender)
+    if (!state || state.window.isDestroyed()) return false
     const suggestedPath = path.join(path.dirname(sourcePath), `${path.basename(sourcePath, path.extname(sourcePath))}.html`)
-    const result = await dialog.showSaveDialog(mainWindow, {
+    const result = await dialog.showSaveDialog(state.window, {
       defaultPath: suggestedPath,
       filters: [{ name: 'HTML', extensions: ['html'] }],
     })
@@ -515,9 +594,10 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('file:export-pdf', async (event, sourcePath: string, html: string) => {
-    if (!isTrustedSender(event.sender) || !mainWindow) return false
+    const state = stateForSender(event.sender)
+    if (!state || state.window.isDestroyed()) return false
     const suggestedPath = path.join(path.dirname(sourcePath), `${path.basename(sourcePath, path.extname(sourcePath))}.pdf`)
-    const result = await dialog.showSaveDialog(mainWindow, {
+    const result = await dialog.showSaveDialog(state.window, {
       defaultPath: suggestedPath,
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     })
@@ -538,9 +618,11 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('file:print', async (event) => {
-    if (!isTrustedSender(event.sender) || !mainWindow) return false
+    const state = stateForSender(event.sender)
+    if (!state || state.window.isDestroyed()) return false
+    if (!state.window) return false
     return new Promise<boolean>((resolve) => {
-      mainWindow?.webContents.print({ silent: false, printBackground: true }, (success) => resolve(success))
+      state.window?.webContents.print({ silent: false, printBackground: true }, (success) => resolve(success))
     })
   })
 
@@ -589,6 +671,14 @@ function registerIpc(): void {
     return settingsService.updateSettings(partial)
   })
 
+  // 应用主题同步：渲染进程切换浅色/深色后，同步 nativeTheme，使系统标题栏等原生 UI 跟随
+  ipcMain.handle('app:theme', (event, theme: unknown) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    if (theme === 'dark' || theme === 'light') {
+      nativeTheme.themeSource = theme
+    }
+  })
+
   ipcMain.handle('app:log', (event, level: unknown, message: unknown, meta: unknown) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
     const safeLevel = level === 'warn' || level === 'error' ? level : 'info'
@@ -596,9 +686,9 @@ function registerIpc(): void {
     appLogger[safeLevel](`[renderer] ${safeMessage}`, meta)
   })
 
-  ipcMain.handle('runner:detect-env', async (event) => {
+  ipcMain.handle('runner:detect-env', async (event, forceRefresh?: boolean) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
-    return runnerService.detectEnvironments()
+    return runnerService.detectEnvironments(Boolean(forceRefresh))
   })
 
   ipcMain.handle('runner:execute', async (event, request: ExecutionRequest) => {
@@ -652,17 +742,16 @@ app.whenReady().then(async () => {
     settingsService = new SettingsService(app.getPath('userData'))
     runnerService = new RunnerService()
     registerIpc()
-    await createWindow()
+    const initialPath = pendingOpenPath
+    pendingOpenPath = null
+    await createWindow(initialPath)
     await updateApplicationMenu()
 
-    if (pendingOpenPath) {
-      const initialPath = pendingOpenPath
-      pendingOpenPath = null
-      await openMarkdownFile(initialPath)
-    }
-
     app.on('activate', async () => {
-      if (BrowserWindow.getAllWindows().length === 0) await createWindow()
+      if (BrowserWindow.getAllWindows().length === 0) {
+        await createWindow()
+        await updateApplicationMenu()
+      }
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -673,15 +762,17 @@ app.whenReady().then(async () => {
 })
 
 if (isPrimaryInstance) {
+  // 单实例 + 多窗口：第二个实例（如「用墨笺打开」另一文件）退出，由主进程为其新建窗口
   app.on('second-instance', (_event, commandLine) => {
     const filePath = findMarkdownArgument(commandLine)
-    if (!filePath) return
-    if (!mainWindow) {
-      pendingOpenPath = filePath
+    if (!filePath) {
+      const state = getFocusedState()
+      if (state) {
+        if (state.window.isMinimized()) state.window.restore()
+        state.window.focus()
+      }
       return
     }
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
     void openMarkdownFile(filePath).catch((error) => console.error('打开 Markdown 文件失败:', error))
   })
 }
@@ -689,7 +780,7 @@ if (isPrimaryInstance) {
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
   if (!isMarkdownPath(filePath)) return
-  if (!mainWindow) {
+  if (windowStates.size === 0) {
     pendingOpenPath = path.resolve(filePath)
     return
   }

@@ -198,7 +198,8 @@ export type DesktopBridge = {
   createFolder: (directoryPath: string, folderName: string) => Promise<string>
   getSettings: () => Promise<AppSettings>
   updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>
-  detectEnvironments: () => Promise<Record<string, { available: boolean; path?: string; version?: string }>>
+  setTheme: (theme: 'light' | 'dark') => Promise<void>
+  detectEnvironments: (forceRefresh?: boolean) => Promise<Record<string, { available: boolean; path?: string; version?: string }>>
   executeCode: (request: ExecutionRequest) => Promise<ExecutionResult>
   cancelExecution: (executionId: string) => Promise<boolean>
   onAiStream: (callback: (event: AiStreamEvent) => void) => () => void

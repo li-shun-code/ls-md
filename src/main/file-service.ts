@@ -208,3 +208,66 @@ export async function resolveLinkedDocument(
 
   return null
 }
+
+export async function createMarkdownFile(directoryPath: string, fileName: string): Promise<string> {
+  let safeName = fileName.trim()
+  if (!safeName) throw new Error('文件名不能为空')
+  if (!isMarkdownPath(safeName)) safeName += '.md'
+  const targetPath = path.join(path.resolve(directoryPath), safeName)
+  let exists = false
+  try {
+    await stat(targetPath)
+    exists = true
+  } catch (err: unknown) {
+    if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'ENOENT') {
+      // file does not exist, good
+    } else {
+      throw err
+    }
+  }
+  if (exists) {
+    throw new Error(`文件已存在：${safeName}`)
+  }
+  await writeFile(targetPath, '', 'utf8')
+  return targetPath
+}
+
+export async function createDirectory(directoryPath: string, folderName: string): Promise<string> {
+  const safeName = folderName.trim()
+  if (!safeName) throw new Error('文件夹名称不能为空')
+  const targetPath = path.join(path.resolve(directoryPath), safeName)
+  await mkdir(targetPath, { recursive: true })
+  return targetPath
+}
+
+export async function renameNode(oldPath: string, newName: string): Promise<string> {
+  const safeNewName = newName.trim()
+  if (!safeNewName) throw new Error('名称不能为空')
+  const resolvedOld = path.resolve(oldPath)
+  const parentDir = path.dirname(resolvedOld)
+  const oldStat = await stat(resolvedOld)
+  const isOldMarkdown = oldStat.isFile() && isMarkdownPath(resolvedOld)
+  let finalNewName = safeNewName
+  if (isOldMarkdown && !isMarkdownPath(finalNewName)) {
+    finalNewName += path.extname(resolvedOld) || '.md'
+  }
+  const resolvedNew = path.join(parentDir, finalNewName)
+  if (resolvedOld.toLowerCase() !== resolvedNew.toLowerCase()) {
+    let exists = false
+    try {
+      await stat(resolvedNew)
+      exists = true
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'ENOENT') {
+        // target doesn't exist, proceed
+      } else {
+        throw err
+      }
+    }
+    if (exists) {
+      throw new Error(`同名文件或文件夹已存在：${finalNewName}`)
+    }
+  }
+  await rename(resolvedOld, resolvedNew)
+  return resolvedNew
+}

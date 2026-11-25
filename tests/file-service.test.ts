@@ -2,7 +2,16 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { listWorkspace, readMarkdown, resolveLinkedDocument, resolveWorkspacePath, writeMarkdown } from '../src/main/file-service'
+import {
+  createDirectory,
+  createMarkdownFile,
+  listWorkspace,
+  readMarkdown,
+  renameNode,
+  resolveLinkedDocument,
+  resolveWorkspacePath,
+  writeMarkdown,
+} from '../src/main/file-service'
 
 const temporaryDirectories: string[] = []
 
@@ -65,5 +74,30 @@ describe('file service', () => {
 
     // 5. 不存在的文件返回 null
     expect(await resolveLinkedDocument(root, 'non_existent.md', root)).toBeNull()
+  })
+
+  it('creates new markdown file, directory, and renames nodes safely', async () => {
+    const root = await createWorkspace()
+
+    // 1. 新建文件（自动补充 .md 后缀）
+    const createdFile = await createMarkdownFile(root, '新建测试')
+    expect(path.basename(createdFile)).toBe('新建测试.md')
+    expect(await readFile(createdFile, 'utf8')).toBe('')
+
+    // 2. 新建子目录
+    const createdDir = await createDirectory(root, '子目录')
+    expect(path.basename(createdDir)).toBe('子目录')
+
+    // 3. 在子目录下新建文件
+    const subFile = await createMarkdownFile(createdDir, '文档.markdown')
+    expect(path.basename(subFile)).toBe('文档.markdown')
+
+    // 4. 重命名文件（保持扩展名）
+    const renamedFile = await renameNode(createdFile, '重命名测试')
+    expect(path.basename(renamedFile)).toBe('重命名测试.md')
+
+    // 5. 重命名文件夹
+    const renamedDir = await renameNode(createdDir, '新子目录')
+    expect(path.basename(renamedDir)).toBe('新子目录')
   })
 })
