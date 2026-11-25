@@ -45,9 +45,9 @@ export class UpdateService {
     return this.state
   }
 
-  /** 是否具备在线升级条件：已打包且为 Windows 平台 */
+  /** 是否具备在线升级条件：已打包且为 Windows 或 macOS 平台 */
   isSupported(): boolean {
-    return app.isPackaged && process.platform === 'win32'
+    return app.isPackaged && (process.platform === 'win32' || process.platform === 'darwin')
   }
 
   /** 启动后延迟静默检查一次 */

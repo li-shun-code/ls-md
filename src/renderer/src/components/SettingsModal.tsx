@@ -28,7 +28,7 @@ const UPDATE_STATUS_TEXT: Record<UpdateState['status'], string> = {
   downloading: '',
   downloaded: '',
   error: '',
-  unsupported: '当前环境不支持在线升级（仅支持 Windows 安装版）',
+  unsupported: '当前环境不支持在线升级（需 Windows / macOS 安装版）',
 }
 
 export type SettingsModalProps = {
