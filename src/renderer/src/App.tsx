@@ -7,6 +7,7 @@ import { MarkdownEditor, type EditorCommands, type EditorPreview } from '@render
 import { AiPanel } from '@renderer/components/AiPanel'
 import { Outline } from '@renderer/components/Outline'
 import { SettingsModal, type SettingsTab } from './components/SettingsModal'
+import { CodeRunnerDialog } from '@renderer/components/CodeRunnerDialog'
 import {
   buildExportHtml,
   countDocument,
@@ -48,6 +49,7 @@ export function App() {
   const [externalChangeBanner, setExternalChangeBanner] = useState<{ path: string; newContent: string } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('runners')
+  const [runnerDialog, setRunnerDialog] = useState<{ language: string; code: string; workingDirectory?: string } | null>(null)
 
   const deferredMarkdown = useDeferredValue(markdown)
   const outline = useMemo(() => extractOutline(deferredMarkdown), [deferredMarkdown])
@@ -75,6 +77,11 @@ export function App() {
 
   const toggleSidebar = useCallback(() => {
     setSidebarOpen((current) => !current)
+  }, [])
+
+  const handleRunCode = useCallback((lang: string, code: string, workingDirectory?: string) => {
+    setAiOpen(false)
+    setRunnerDialog({ language: lang, code, workingDirectory })
   }, [])
 
   const insertLink = useCallback(() => {
@@ -175,6 +182,7 @@ export function App() {
     if (dirty && !window.confirm('当前文档有未保存的修改，确定要切换文档吗？')) return
 
     try {
+      setRunnerDialog(null)
       void window.desktop.logToFile?.('info', '切换文档', { filePath }).catch(() => undefined)
       const content = contentOverride ?? (await window.desktop.readMarkdown(filePath))
       const snapshot = await window.desktop.readRecovery(filePath)
@@ -280,6 +288,7 @@ export function App() {
     if (dirty && !window.confirm('当前文档有未保存的修改，确定要新建文档吗？')) return
     setRecoveryBanner(null)
     setExternalChangeBanner(null)
+    setRunnerDialog(null)
     setActivePath('')
     setMarkdown('')
     setSavedMarkdown('')
@@ -521,6 +530,8 @@ export function App() {
 
   useEffect(() => {
     localStorage.setItem('markdown-desk-theme', theme)
+    // 同步到主进程 nativeTheme，使系统标题栏等原生 UI 跟随应用主题
+    void window.desktop.setTheme(theme)
   }, [theme])
 
   useEffect(() => {
@@ -659,11 +670,17 @@ export function App() {
                       onNotice={showNotice}
                       onOpenFile={(newPath) => void openDocument(newPath)}
                       onRenameFile={(oldPath, newPath) => {
-                        if (activePath === oldPath) setActivePath(newPath)
+                        if (activePath === oldPath) {
+                          setActivePath(newPath)
+                        } else if (activePath.startsWith(oldPath + '/') || activePath.startsWith(oldPath + '\\')) {
+                          setActivePath(newPath + activePath.slice(oldPath.length))
+                        }
                         if (workspaceRoot) void refreshTree(workspaceRoot)
                       }}
                       onDeleteFile={(deletedPath) => {
-                        if (activePath === deletedPath) newDocument()
+                        if (activePath === deletedPath || activePath.startsWith(deletedPath + '/') || activePath.startsWith(deletedPath + '\\')) {
+                          newDocument()
+                        }
                         if (workspaceRoot) void refreshTree(workspaceRoot)
                       }}
                     />
@@ -723,6 +740,7 @@ export function App() {
                 markdown={markdown}
                 mode={mode}
                 workspaceRoot={workspaceRoot}
+                scrollPositionKey={activePath || null}
                 onMarkdownChange={setMarkdown}
                 onSourceChange={setMarkdown}
                 onCursorChange={setCursor}
@@ -730,6 +748,7 @@ export function App() {
                 onOpenPreview={handleOpenPreview}
                 onNavigateLink={handleNavigateLink}
                 onTriggerAiAction={handleTriggerAiAction}
+                onRunCode={handleRunCode}
               />
             </article>
           </div>
@@ -961,6 +980,16 @@ export function App() {
         onClose={() => setSettingsOpen(false)}
         onSettingsSaved={() => showNotice('设置已保存并生效')}
       />
+
+      {runnerDialog && (
+        <CodeRunnerDialog
+          language={runnerDialog.language}
+          initialCode={runnerDialog.code}
+          workingDirectory={runnerDialog.workingDirectory}
+          onClose={() => setRunnerDialog(null)}
+          onNotice={showNotice}
+        />
+      )}
 
       {notice && <div className="notice" role="status" aria-live="polite">{notice}</div>}
     </div>

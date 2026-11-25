@@ -137,10 +137,10 @@ export function SettingsModal({
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState('')
 
-  const handleDetectEnvironments = useCallback(async () => {
+  const handleDetectEnvironments = useCallback(async (force = false) => {
     setIsDetecting(true)
     try {
-      const envs = await window.desktop.detectEnvironments()
+      const envs = await window.desktop.detectEnvironments(force)
       setDetectedEnvs(envs)
     } catch (err) {
       console.error('Failed to detect environments:', err)
@@ -177,11 +177,12 @@ export function SettingsModal({
           if (aiSettings.model) setAiModel(aiSettings.model)
           setApiKeyConfigured(aiSettings.apiKeyConfigured)
         }
-
-        await handleDetectEnvironments()
       } catch (err) {
         console.error('Failed to load settings:', err)
       }
+
+      // 异步在后台复用缓存或无阻塞检测，确保弹窗立即秒开
+      void handleDetectEnvironments(false)
     })()
   }, [open, initialTab, handleDetectEnvironments])
 
@@ -531,7 +532,7 @@ export function SettingsModal({
                   <button
                     type="button"
                     className="settings-modal-btn settings-detect-btn"
-                    onClick={() => void handleDetectEnvironments()}
+                    onClick={() => void handleDetectEnvironments(true)}
                     disabled={isDetecting}
                   >
                     <RefreshCw
