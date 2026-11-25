@@ -2,7 +2,8 @@ import { access, mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { RunnerService } from '../src/main/runner-service'
+import { RunnerService, computeBashResolution } from '../src/main/runner-service'
+import { decodeOutput } from '../src/main/logger'
 import type { ExecutionRequest, RunnerDefinition } from '../src/shared/types'
 
 describe('RunnerService', () => {
@@ -191,6 +192,36 @@ describe('RunnerService', () => {
       expect(path.resolve(result.stdout.trim())).toBe(path.resolve(customCwd))
 
       await rm(customCwd, { recursive: true, force: true })
+    })
+  })
+
+  describe('编码处理', () => {
+    it('decodeOutput 优先 UTF-8，损坏字节在 win32 下回退 GBK', () => {
+      // '你好' 的 GBK 字节序列
+      const gbkBuffer = Buffer.from([0xc4, 0xe3, 0xba, 0xc3])
+      const decoded = decodeOutput(gbkBuffer, 'win32')
+      expect(decoded).toBe('你好')
+      expect(decodeOutput(Buffer.from('中文 utf-8', 'utf8'), 'win32')).toBe('中文 utf-8')
+      expect(decodeOutput(Buffer.from('中文 utf-8', 'utf8'), 'darwin')).toBe('中文 utf-8')
+    })
+  })
+
+  describe('win32 bash 解析与降级', () => {
+    it('win32 无 bash 时回退 PowerShell', async () => {
+      const resolution = await computeBashResolution('win32', async () => undefined, [])
+      expect(resolution.kind).toBe('powershell')
+      expect(resolution.command).toContain('powershell')
+    })
+
+    it('win32 在 PATH 中找到 bash 时保持 bash', async () => {
+      const resolution = await computeBashResolution('win32', async () => 'C:\\Git\\bin\\bash.exe', [])
+      expect(resolution.kind).toBe('bash')
+      expect(resolution.command).toContain('bash')
+    })
+
+    it('非 win32 平台恒为 bash', async () => {
+      const resolution = await computeBashResolution('darwin', async () => undefined, [])
+      expect(resolution.kind).toBe('bash')
     })
   })
 })

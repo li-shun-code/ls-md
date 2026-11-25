@@ -4,8 +4,61 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { ExecutionRequest, ExecutionResult, RunnerDefinition } from '../shared/types'
+import { decodeOutput } from './logger'
 
 const execFileAsync = promisify(execFile)
+
+/** 按语言注入的环境变量：解决 Windows 下子进程输出使用 locale 编码导致的中文乱码 */
+const LANGUAGE_ENV: Record<string, NodeJS.ProcessEnv> = {
+  python: { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+  bash: { LANG: 'C.UTF-8' },
+}
+
+function envFor(language: string): NodeJS.ProcessEnv {
+  const base: NodeJS.ProcessEnv = { ...process.env }
+  if (!base.LANG) base.LANG = 'C.UTF-8'
+  const key = (language || '').toLowerCase().trim()
+  const inject = LANGUAGE_ENV[key]
+  return inject ? { ...base, ...inject } : base
+}
+
+export type BashResolution = { kind: 'bash' | 'powershell'; command: string }
+
+/** Windows 下 Git Bash 常见安装路径 */
+const BASH_CANDIDATES_WIN32 = [
+  'C:\\Program Files\\Git\\bin\\bash.exe',
+  'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+  'C:\\Git\\bin\\bash.exe',
+]
+
+function bashCommandFor(bashPath?: string): string {
+  return bashPath ? `"${bashPath}" "{file}"` : 'bash "{file}"'
+}
+
+export async function computeBashResolution(
+  platform: NodeJS.Platform,
+  findOnPath: (command: string) => Promise<string | undefined>,
+  candidates: string[],
+): Promise<BashResolution> {
+  if (platform !== 'win32') {
+    return { kind: 'bash', command: bashCommandFor() }
+  }
+  const fromPath = await findOnPath('bash')
+  if (fromPath) {
+    return { kind: 'bash', command: bashCommandFor(fromPath) }
+  }
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate)
+      if (info.isFile()) {
+        return { kind: 'bash', command: bashCommandFor(candidate) }
+      }
+    } catch {
+      // 继续探测下一个候选
+    }
+  }
+  return { kind: 'powershell', command: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{file}"' }
+}
 
 export const COMMANDS_TO_SCAN = [
   'python',
@@ -38,7 +91,14 @@ export class RunnerService {
     return this.tempDirectory
   }
 
-  public async detectEnvironments(): Promise<Record<string, DetectedEnvironment>> {
+  private detectedEnvironmentsCache: { data: Record<string, DetectedEnvironment>; at: number } | null = null
+
+  public async detectEnvironments(forceRefresh = false): Promise<Record<string, DetectedEnvironment>> {
+    const now = Date.now()
+    if (!forceRefresh && this.detectedEnvironmentsCache && now - this.detectedEnvironmentsCache.at < 300_000) {
+      return this.detectedEnvironmentsCache.data
+    }
+
     const results: Record<string, DetectedEnvironment> = {}
 
     await Promise.all(
@@ -48,7 +108,20 @@ export class RunnerService {
       })
     )
 
+    this.detectedEnvironmentsCache = { data: results, at: now }
     return results
+  }
+
+  private bashResolutionCache: { resolved: Promise<BashResolution>; at: number } | null = null
+
+  private resolveBash(): Promise<BashResolution> {
+    const now = Date.now()
+    if (this.bashResolutionCache && now - this.bashResolutionCache.at < 60_000) {
+      return this.bashResolutionCache.resolved
+    }
+    const resolved = computeBashResolution(process.platform, (cmd) => this.findExecutable(cmd), BASH_CANDIDATES_WIN32)
+    this.bashResolutionCache = { resolved, at: now }
+    return resolved
   }
 
   public async executeCode(
@@ -82,20 +155,42 @@ export class RunnerService {
       cwd = process.cwd()
     }
 
-    const finalCommand = runner.commandTemplate
+    let targetFile = tempFilePath
+    let finalCommand = runner.commandTemplate
       .replaceAll('{file}', tempFilePath)
       .replaceAll('{dir}', cwd)
       .replaceAll('{bin}', binFilePath)
+    let powerShellCompatNote = ''
+
+    const isBashRunner =
+      (runner.language || '').toLowerCase() === 'bash' ||
+      (request.language || '').toLowerCase() === 'bash'
+
+    if (isBashRunner && process.platform === 'win32') {
+      const resolution = await this.resolveBash()
+      if (resolution.kind === 'powershell') {
+        targetFile = path.join(this.tempDirectory, `run-${request.executionId}.ps1`)
+        await writeFile(targetFile, request.code.replace(/^#![^\n]*\n/, ''), 'utf8')
+        finalCommand = resolution.command
+          .replaceAll('{file}', targetFile)
+          .replaceAll('{dir}', cwd)
+          .replaceAll('{bin}', binFilePath)
+        powerShellCompatNote = '[PowerShell 兼容执行] 未检测到 Git Bash，当前脚本由 PowerShell 执行，部分 sh 语法可能不兼容。\n'
+      }
+    }
 
     let child: ChildProcess
     try {
       child = spawn(finalCommand, {
         shell: true,
         cwd,
-        env: process.env,
+        env: envFor(runner.language || request.language),
       })
     } catch (err: unknown) {
       await rm(tempFilePath, { force: true }).catch(() => {})
+      if (targetFile !== tempFilePath) {
+        await rm(targetFile, { force: true }).catch(() => {})
+      }
       await rm(binFilePath, { force: true }).catch(() => {})
       const message = err instanceof Error ? err.message : String(err)
       return {
@@ -111,22 +206,24 @@ export class RunnerService {
 
     this.activeProcesses.set(request.executionId, child)
 
-    let stdout = ''
-    let stderr = ''
+    let stdoutBytes = Buffer.alloc(0)
+    let stderrBytes = Buffer.alloc(0)
     let timedOut = false
     const MAX_OUTPUT = 50000
 
     child.stdout?.on('data', (data: Buffer | string) => {
-      const chunk = data.toString()
-      if (stdout.length < MAX_OUTPUT) {
-        stdout += chunk.slice(0, MAX_OUTPUT - stdout.length)
+      const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data)
+      const remaining = MAX_OUTPUT - stdoutBytes.length
+      if (remaining > 0) {
+        stdoutBytes = Buffer.concat([stdoutBytes, chunk.subarray(0, remaining)])
       }
     })
 
     child.stderr?.on('data', (data: Buffer | string) => {
-      const chunk = data.toString()
-      if (stderr.length < MAX_OUTPUT) {
-        stderr += chunk.slice(0, MAX_OUTPUT - stderr.length)
+      const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data)
+      const remaining = MAX_OUTPUT - stderrBytes.length
+      if (remaining > 0) {
+        stderrBytes = Buffer.concat([stderrBytes, chunk.subarray(0, remaining)])
       }
     })
 
@@ -153,8 +250,8 @@ export class RunnerService {
         const durationMs = Date.now() - startTime
         resolve({
           executionId: request.executionId,
-          stdout,
-          stderr,
+          stdout: powerShellCompatNote + decodeOutput(stdoutBytes),
+          stderr: decodeOutput(stderrBytes),
           exitCode,
           durationMs,
           timedOut,
@@ -175,6 +272,9 @@ export class RunnerService {
     }).finally(async () => {
       this.activeProcesses.delete(request.executionId)
       await rm(tempFilePath, { force: true }).catch(() => {})
+      if (targetFile !== tempFilePath) {
+        await rm(targetFile, { force: true }).catch(() => {})
+      }
       await rm(binFilePath, { force: true }).catch(() => {})
     })
   }
@@ -229,61 +329,24 @@ export class RunnerService {
   private async findExecutable(command: string): Promise<string | undefined> {
     if (process.platform === 'win32') {
       try {
-        const { stdout } = await execFileAsync('where.exe', [command], { timeout: 3000 })
+        const { stdout } = await execFileAsync('where.exe', [command], { timeout: 1500 })
         const lines = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
         if (lines.length > 0) {
           return lines[0]
         }
       } catch {
-        // Fallback to checking PATH
-      }
-
-      const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean)
-      const pathext = (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
-      const candidates = command.includes('.')
-        ? [command]
-        : [
-            command,
-            ...pathext.map((ext) => `${command}${ext.toLowerCase()}`),
-            ...pathext.map((ext) => `${command}${ext.toUpperCase()}`),
-          ]
-
-      for (const dir of pathDirs) {
-        for (const candidate of candidates) {
-          const fullPath = path.join(dir, candidate)
-          try {
-            const s = await stat(fullPath)
-            if (s.isFile()) {
-              return fullPath
-            }
-          } catch {
-            // ignore
-          }
-        }
+        // where.exe 未找到或超时
       }
       return undefined
     } else {
       try {
-        const { stdout } = await execFileAsync('which', [command], { timeout: 3000 })
+        const { stdout } = await execFileAsync('which', [command], { timeout: 1500 })
         const lines = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
         if (lines.length > 0) {
           return lines[0]
         }
       } catch {
-        // Fallback to checking PATH
-      }
-
-      const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean)
-      for (const dir of pathDirs) {
-        const fullPath = path.join(dir, command)
-        try {
-          const s = await stat(fullPath)
-          if (s.isFile()) {
-            return fullPath
-          }
-        } catch {
-          // ignore
-        }
+        // which 未找到或超时
       }
       return undefined
     }
@@ -292,7 +355,7 @@ export class RunnerService {
   private async detectVersion(command: string, exePath: string): Promise<string | undefined> {
     const tryVersion = async (args: string[]) => {
       try {
-        const { stdout, stderr } = await execFileAsync(exePath, args, { timeout: 2000 })
+        const { stdout, stderr } = await execFileAsync(exePath, args, { timeout: 1500 })
         const raw = (stdout || stderr).trim()
         if (raw) {
           const line = raw.split(/\r?\n/).map((l) => l.trim()).find(Boolean)

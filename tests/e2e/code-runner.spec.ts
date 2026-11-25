@@ -37,25 +37,31 @@ test('renders code blocks with language badges, runs code, and opens settings mo
     const preElements = page.locator('.tiptap-editor pre')
     await expect(preElements.first()).toHaveCSS('background-color', 'rgb(246, 248, 250)')
 
-    // 3. Click the run button on the JavaScript code block
+    // 3. Click the run button on the JavaScript code block — opens the code runner dialog
     const runButtons = page.locator('.code-run-btn')
     await expect(runButtons).toHaveCount(2)
     await runButtons.nth(0).click()
 
-    // 4. Verify code-block-output appears with status and stdout for JavaScript
-    const jsOutput = page.locator('.code-block-output').nth(0)
-    await expect(jsOutput).toBeVisible({ timeout: 15_000 })
-    await expect(jsOutput.locator('.code-output-status')).toHaveText('成功 (0)', { timeout: 10_000 })
-    await expect(jsOutput.locator('.code-output-stdout')).toContainText('Hello from JavaScript runner')
+    // 4. Verify the code runner dialog shows status and stdout for JavaScript
+    const dialog = page.locator('.code-runner-dialog')
+    await expect(dialog).toBeVisible({ timeout: 10_000 })
+    await expect(dialog.locator('.code-runner-lang-badge')).toHaveText('javascript')
+    await expect(dialog.locator('.code-runner-status')).toHaveText('成功 (0)', { timeout: 10_000 })
+    await expect(dialog.locator('.runner-output-stdout')).toContainText('Hello from JavaScript runner')
 
-    // Also run the Python code block to verify Python runner execution
+    // 5. Close the dialog and run the Python code block too
+    await page.locator('.code-runner-dialog .dialog-close').click()
+    await expect(dialog).not.toBeVisible()
     await runButtons.nth(1).click()
-    const pyOutput = page.locator('.code-block-output').nth(1)
-    await expect(pyOutput).toBeVisible({ timeout: 15_000 })
-    await expect(pyOutput.locator('.code-output-status')).toHaveText('成功 (0)', { timeout: 10_000 })
-    await expect(pyOutput.locator('.code-output-stdout')).toContainText('Hello from Python runner')
+    const dialog2 = page.locator('.code-runner-dialog')
+    await expect(dialog2).toBeVisible({ timeout: 10_000 })
+    await expect(dialog2.locator('.code-runner-lang-badge')).toHaveText('python')
+    await expect(dialog2.locator('.code-runner-status')).toHaveText('成功 (0)', { timeout: 10_000 })
+    await expect(dialog2.locator('.runner-output-stdout')).toContainText('Hello from Python runner')
+    await page.locator('.code-runner-dialog .dialog-close').click()
+    await expect(dialog2).not.toBeVisible()
 
-    // 5. Trigger settings modal opening via toolbar button
+    // 6. Trigger settings modal opening via toolbar button
     const settingsBtn = page.getByRole('button', { name: /首选项与设置/ })
     await expect(settingsBtn).toBeVisible()
     await settingsBtn.click()
