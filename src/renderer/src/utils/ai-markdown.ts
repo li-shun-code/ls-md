@@ -83,8 +83,17 @@ function renderList(lines: string[], start: number, ordered: boolean): { html: s
 }
 
 export function renderAiMarkdown(markdown: string): string {
+  // 防御：非字符串输入返回空；超大输入截断渲染，保证 blocks 数量有上界，
+  // 从结构上杜绝 RangeError: Invalid array length（数组长度超出上限）崩溃
+  if (typeof markdown !== 'string') return ''
+  const MAX_INPUT_LENGTH = 1_000_000
+  if (markdown.length > MAX_INPUT_LENGTH) {
+    markdown = `${markdown.slice(0, MAX_INPUT_LENGTH)}\n\n…（内容过长，已截断渲染）`
+  }
+
   const lines = markdown.replace(/\r\n?/g, '\n').split('\n')
   const blocks: string[] = []
+  const MAX_BLOCKS = 100_000
   let index = 0
 
   while (index < lines.length) {
@@ -92,6 +101,13 @@ export function renderAiMarkdown(markdown: string): string {
     if (!line.trim()) {
       index += 1
       continue
+    }
+    // 防御：任何分支若未前进则强制前进一步，杜绝死循环导致数组无限膨胀
+    const indexBefore = index
+
+    if (blocks.length >= MAX_BLOCKS) {
+      blocks.push('<p>…（内容过长，已截断渲染）</p>')
+      break
     }
 
     const fence = /^\s*(`{3,}|~{3,})\s*([^\s]*)/.exec(line)
@@ -164,6 +180,8 @@ export function renderAiMarkdown(markdown: string): string {
       index += 1
     }
     blocks.push(`<p>${inlineMarkdown(paragraph.join('\n')).replace(/\n/g, '<br />')}</p>`)
+
+    if (index === indexBefore) index += 1
   }
 
   return blocks.join('')

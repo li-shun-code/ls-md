@@ -19,4 +19,16 @@ describe('AI Markdown rendering', () => {
     expect(html).not.toContain('<script>')
     expect(html).not.toContain('href="javascript:')
   })
+
+  it('truncates oversized input instead of crashing', () => {
+    const huge = `${'很长的段落。\n\n'.repeat(200_000)}结尾`
+    const html = renderAiMarkdown(huge)
+
+    expect(html).toContain('已截断渲染')
+    expect(html.length).toBeLessThan(5_000_000)
+  })
+
+  it('returns empty for non-string input', () => {
+    expect(renderAiMarkdown(undefined as unknown as string)).toBe('')
+  })
 })

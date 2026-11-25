@@ -63,7 +63,14 @@ function readStoredSessions(): AiSession[] {
 }
 
 const AiMarkdown = memo(function AiMarkdown({ markdown }: { markdown: string }) {
-  const html = useMemo(() => renderAiMarkdown(markdown), [markdown])
+  // 兜底：渲染异常时降级为纯文本，避免单条消息拖垮整个渲染进程
+  const html = useMemo(() => {
+    try {
+      return renderAiMarkdown(markdown)
+    } catch {
+      return `<pre>${String(markdown ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c)}</pre>`
+    }
+  }, [markdown])
   return <div className="ai-message-content ai-message-markdown" dangerouslySetInnerHTML={{ __html: html }} />
 })
 
