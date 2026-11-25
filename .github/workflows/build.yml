@@ -59,6 +59,8 @@ jobs:
             release/*.exe
             release/*.dmg
             release/*.zip
+            release/*.yml
+            release/*.blockmap
           if-no-files-found: warn
 
   release:
@@ -76,7 +78,9 @@ jobs:
       - name: Release to GitHub
         uses: softprops/action-gh-release@v2
         with:
-          files: dist-artifacts/*
+          files: |
+            dist-artifacts/*
+            !dist-artifacts/**/__macosx*
           draft: false
           prerelease: false
           generate_release_notes: true
