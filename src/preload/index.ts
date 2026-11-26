@@ -45,6 +45,7 @@ const desktopBridge: DesktopBridge = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (settings) => ipcRenderer.invoke('settings:update', settings),
   setTheme: (theme) => ipcRenderer.invoke('app:theme', theme),
+  setActiveDocumentTheme: (themeId) => ipcRenderer.invoke('document-theme:active-menu', themeId),
   importDocumentTheme: () => ipcRenderer.invoke('document-theme:import'),
   listDocumentThemes: () => ipcRenderer.invoke('document-theme:list'),
   readDocumentTheme: (id) => ipcRenderer.invoke('document-theme:read', id),

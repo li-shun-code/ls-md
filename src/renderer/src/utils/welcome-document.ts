@@ -1,7 +1,7 @@
-export const WELCOME_DOCUMENT_MARKDOWN = `# 欢迎使用墨笺 (ls-md) · 平台全功能指南
+export const WELCOME_DOCUMENT_MARKDOWN = `# 欢迎使用 Mojian · 平台全功能指南
 
-> **墨笺** 是一款现代化、面向桌面端深度优化的 **双引擎 AI Markdown 编辑器**。
-> 无论您是进行日常技术写作、知识库整理、流程图绘制，还是借助 AI 辅助创作，墨笺都能为您提供极致丝滑的写作体验。
+> **Mojian** 是一款现代化、面向桌面端深度优化的 **双引擎 AI Markdown 编辑器**。
+> 无论您是进行日常技术写作、知识库整理、流程图绘制，还是借助 AI 辅助创作，Mojian 都能为您提供极致丝滑的写作体验。
 
 ---
 
@@ -14,7 +14,7 @@ export const WELCOME_DOCUMENT_MARKDOWN = `# 欢迎使用墨笺 (ls-md) · 平台
 
 ## ✍️ 基础文本排版与样式
 
-墨笺支持丰富且标准的一级至六级标题与行内文本样式：
+Mojian 支持丰富且标准的一级至六级标题与行内文本样式：
 
 ### 文本修饰示例
 - **加粗文本**：使用 \`**加粗内容**\` 或按下 \`Ctrl + B\`
@@ -22,11 +22,11 @@ export const WELCOME_DOCUMENT_MARKDOWN = `# 欢迎使用墨笺 (ls-md) · 平台
 - ~~删除线~~：使用 \`~~删除线~~\` 或按下 \`Ctrl + Shift + X\`
 - \`行内代码\`：使用反引号包裹 \`code\` 或按下 \`Ctrl + Shift + \`\`
 - ==高亮重点==：用于标注文档中的核心关键信息
-- [墨笺官方仓库链接](https://github.com/li-shun-code/ls-md)：按 \`Ctrl + K\` 快速插入超链接
+- [Mojian 官方仓库链接](https://github.com/li-shun-code/mojian)：按 \`Ctrl + K\` 快速插入超链接
 
 ### 引用与分割线
 > **写作箴言**：工欲善其事，必先利其器。清晰的排版让思考更加聚焦。
-> —— 墨笺设计团队
+> —— Mojian 团队
 
 ---
 
@@ -90,12 +90,12 @@ print("斐波那契数列前 8 项:", fibonacci(8))
 
 ## 🧜‍♂️ Mermaid 流程图与架构图 (点击可查看高清大图并下载)
 
-墨笺内置强劲的 Mermaid 引擎。**直接点击下方任意图表**，即可开启**高清大图预览**，支持 **60 FPS 丝滑拖拽平移、滚轮缩放**，并通过右上角 **【下载 ▾】** 保存为 **PNG / SVG / JPEG**！
+Mojian 内置强劲的 Mermaid 引擎。**直接点击下方任意图表**，即可开启**高清大图预览**，支持 **60 FPS 丝滑拖拽平移、滚轮缩放**，并通过右上角 **【下载 ▾】** 保存为 **PNG / SVG / JPEG**！
 
 ### 1. 业务交互流程图
 \`\`\`mermaid
 graph TD
-  Start([🚀 启动墨笺]) --> OpenFile[打开 Markdown 文件 / 工作区]
+  Start([🚀 启动 Mojian]) --> OpenFile[打开 Markdown 文件 / 工作区]
   OpenFile --> EditMode{选择编辑模式}
   EditMode -->|所见即所得| WYSIWYG[实时富文本排版编辑]
   EditMode -->|源码模式| Source[高精源码直接编写]
@@ -110,7 +110,7 @@ graph TD
 sequenceDiagram
   autonumber
   actor User as 创作者
-  participant Editor as 墨笺编辑器
+  participant Editor as Mojian 编辑器
   participant AI as AI 助手引擎
   participant Exporter as 导出引擎
 
@@ -184,5 +184,5 @@ $e^{i\\theta} = \\cos\\theta + i\\sin\\theta$
 
 ---
 
-感谢您使用 **墨笺**，祝您创作愉快！如需随时再次查看本文档，可点击顶部菜单栏 **【帮助】 -> 【功能介绍与示例文档】**。
+感谢您使用 **Mojian**，祝您创作愉快！如需随时再次查看本文档，可点击顶部菜单栏 **【帮助】 -> 【功能介绍与示例文档】**。
 `

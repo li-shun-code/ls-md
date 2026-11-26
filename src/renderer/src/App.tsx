@@ -19,6 +19,7 @@ import {
 import type { OutlineItem } from '@renderer/utils/markdown'
 import { downloadDiagram, downloadImage, type ExportFormat } from '@renderer/utils/diagram-export'
 import { DEFAULT_DOCUMENT_THEME_ID, getBuiltInDocumentTheme, scopeDocumentThemeCss } from '@renderer/utils/document-themes'
+import { normalizeDocumentThemeId } from '@shared/document-theme-options'
 import { WELCOME_DOCUMENT_MARKDOWN } from '@renderer/utils/welcome-document'
 import './styles.css'
 
@@ -69,9 +70,9 @@ export function App() {
   const [aiOpen, setAiOpen] = useState(() => localStorage.getItem('markdown-desk-ai-panel') === 'open')
   const [focusMode, setFocusMode] = useState(false)
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('markdown-desk-theme') as Theme | null) ?? 'light')
-  const [documentThemeId, setDocumentThemeId] = useState(() => localStorage.getItem('markdown-desk-document-theme') ?? DEFAULT_DOCUMENT_THEME_ID)
+  const [documentThemeId, setDocumentThemeId] = useState(() => normalizeDocumentThemeId(localStorage.getItem('markdown-desk-document-theme') ?? DEFAULT_DOCUMENT_THEME_ID))
   const [documentThemeCss, setDocumentThemeCss] = useState(() => {
-    const savedThemeId = localStorage.getItem('markdown-desk-document-theme') ?? DEFAULT_DOCUMENT_THEME_ID
+    const savedThemeId = normalizeDocumentThemeId(localStorage.getItem('markdown-desk-document-theme') ?? DEFAULT_DOCUMENT_THEME_ID)
     return getBuiltInDocumentTheme(savedThemeId)?.css ?? getBuiltInDocumentTheme(DEFAULT_DOCUMENT_THEME_ID)?.css ?? ''
   })
   const [zoom, setZoom] = useState(1)
@@ -779,6 +780,10 @@ export function App() {
   }, [activateDocumentTab, documentTabs, persistActiveTab, showNotice, workspaceRoot])
 
   const handleMenuCommand = useCallback((command: MenuCommand) => {
+    if (typeof command !== 'string') {
+      if (command.type === 'theme.select') setDocumentThemeId(command.themeId)
+      return
+    }
     switch (command) {
       case 'file.new': newDocument(); break
       case 'file.openFolder': void openWorkspace(); break
@@ -816,10 +821,10 @@ export function App() {
       case 'view.zoomIn': setZoom((current) => Math.min(1.25, current + 0.05)); break
       case 'view.zoomOut': setZoom((current) => Math.max(0.8, current - 0.05)); break
       case 'view.resetZoom': setZoom(1); break
-      case 'theme.toggle': setTheme((current) => current === 'light' ? 'dark' : 'light'); break
       case 'help.shortcuts': setShortcutsOpen(true); break
       case 'help.welcomeDocument': openWelcomeDocument(); break
       case 'settings.open': handleOpenSettings('runners'); break
+      case 'settings.openTheme': handleOpenSettings('theme'); break
     }
   }, [exportDocument, handleOpenSettings, newDocument, openWelcomeDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
 
@@ -831,8 +836,10 @@ export function App() {
 
   useEffect(() => {
     localStorage.setItem('markdown-desk-document-theme', documentThemeId)
+    void window.desktop.setActiveDocumentTheme(documentThemeId)
     const builtInTheme = getBuiltInDocumentTheme(documentThemeId)
     if (builtInTheme) {
+      setTheme(documentThemeId === 'night' ? 'dark' : 'light')
       setDocumentThemeCss(builtInTheme.css)
       return
     }
@@ -1000,7 +1007,7 @@ export function App() {
   }, [handleOpenSettings, insertLink, mode, newDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
 
   return (
-    <div className={`app-shell theme-${theme}${focusMode ? ' is-focus-mode' : ''}${sidebarOpen ? '' : ' is-sidebar-closed'}`} style={{ '--editor-zoom': zoom } as CSSProperties}>
+    <div className={`app-shell theme-${theme}${focusMode ? ' is-focus-mode' : ''}${sidebarOpen ? '' : ' is-sidebar-closed'}`} data-document-theme={documentThemeId} style={{ '--editor-zoom': zoom } as CSSProperties}>
       <style data-document-theme="active">{scopeDocumentThemeCss(documentThemeCss)}</style>
       <div className="workspace-layout">
         {sidebarOpen && (

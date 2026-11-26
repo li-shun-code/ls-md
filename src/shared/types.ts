@@ -198,10 +198,11 @@ export type MenuCommand =
   | 'view.zoomIn'
   | 'view.zoomOut'
   | 'view.resetZoom'
-  | 'theme.toggle'
+  | { type: 'theme.select'; themeId: string }
   | 'help.shortcuts'
   | 'help.welcomeDocument'
   | 'settings.open'
+  | 'settings.openTheme'
 
 export type UpdateState = {
   status:
@@ -256,6 +257,7 @@ export type DesktopBridge = {
   getSettings: () => Promise<AppSettings>
   updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>
   setTheme: (theme: 'light' | 'dark') => Promise<void>
+  setActiveDocumentTheme: (themeId: string) => Promise<void>
   importDocumentTheme: () => Promise<ImportedDocumentTheme | null>
   listDocumentThemes: () => Promise<DocumentThemeSummary[]>
   readDocumentTheme: (id: string) => Promise<string | null>

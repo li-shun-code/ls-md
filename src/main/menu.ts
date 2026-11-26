@@ -1,6 +1,7 @@
 import { BrowserWindow, Menu, type MenuItemConstructorOptions } from 'electron'
 import path from 'node:path'
-import type { MenuCommand } from '../shared/types'
+import { BUILT_IN_DOCUMENT_THEME_OPTIONS } from '../shared/document-theme-options'
+import type { DocumentThemeSummary, MenuCommand } from '../shared/types'
 
 function sendCommand(window: BrowserWindow | null, command: MenuCommand): void {
   if (!window || window.isDestroyed()) {
@@ -12,6 +13,8 @@ function sendCommand(window: BrowserWindow | null, command: MenuCommand): void {
 
 export type ApplicationMenuOptions = {
   recentFiles?: string[]
+  documentThemes?: DocumentThemeSummary[]
+  activeDocumentThemeId?: string
   onOpenRecent?: (filePath: string) => void
   onClearRecent?: () => void
 }
@@ -21,6 +24,11 @@ export function buildApplicationMenu(
   options?: ApplicationMenuOptions
 ): Menu {
   const recentFiles = options?.recentFiles ?? []
+  const documentThemes = [
+    ...BUILT_IN_DOCUMENT_THEME_OPTIONS,
+    ...(options?.documentThemes ?? []),
+  ]
+  const activeDocumentThemeId = options?.activeDocumentThemeId ?? 'github'
   const onOpenRecent = options?.onOpenRecent
   const onClearRecent = options?.onClearRecent
 
@@ -126,7 +134,16 @@ export function buildApplicationMenu(
     },
     {
       label: '主题',
-      submenu: [command('切换浅色/深色', 'theme.toggle')],
+      submenu: [
+        ...documentThemes.map((theme): MenuItemConstructorOptions => ({
+          label: theme.name,
+          type: 'radio',
+          checked: activeDocumentThemeId === theme.id,
+          click: () => sendCommand(getWindow(), { type: 'theme.select', themeId: theme.id }),
+        })),
+        { type: 'separator' },
+        command('主题管理…', 'settings.openTheme'),
+      ],
     },
     {
       label: '帮助',

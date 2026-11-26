@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and specs for `li-shun-code/ls-md` live in GitHub Issues. Use the `gh` CLI from this repository.
+Issues and specs for `li-shun-code/mojian` live in GitHub Issues. Use the `gh` CLI from this repository.
 
 ## Conventions
 

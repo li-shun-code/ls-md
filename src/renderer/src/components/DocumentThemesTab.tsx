@@ -88,8 +88,8 @@ export function DocumentThemesTab({ selectedThemeId, onSelectTheme }: DocumentTh
       <div className="settings-theme-library">
         <div className="settings-theme-library-heading">
           <div>
-            <h3>内置主题</h3>
-            <p>为长文阅读、日常写作和低光环境准备的文档样式。</p>
+            <h3>Typora 经典内置主题</h3>
+            <p>GitHub、Gothic、Newsprint、Night、Pixyll、Whitey，以及你导入的自定义主题。</p>
           </div>
           <button
             type="button"
@@ -110,11 +110,13 @@ export function DocumentThemesTab({ selectedThemeId, onSelectTheme }: DocumentTh
               key={theme.id}
             >
               <style>{scopeDocumentThemeCss(theme.css, `[data-theme-preview="${theme.id}"]`)}</style>
-              <div className="settings-theme-preview mojian-document" data-theme-preview={theme.id}>
-                <h1>文档标题</h1>
-                <p>清晰舒适的正文排版。</p>
-                <blockquote>阅读与写作的平衡</blockquote>
-                <pre><code>const theme = '墨笺'</code></pre>
+              <div className="settings-theme-preview mojian-document tiptap-editor" data-theme-preview={theme.id}>
+                <h1>写下你的想法</h1>
+                <p>清晰的正文、<a href="#preview">链接</a>和 <code>行内代码</code>。</p>
+                <blockquote><p>让长文阅读保持舒适。</p></blockquote>
+                <ul><li>标题和段落</li><li>引用和列表</li></ul>
+                <table><tbody><tr><th>主题</th><th>预览</th></tr><tr><td>Typora</td><td>内置样式</td></tr></tbody></table>
+                <pre><code>const editor = 'Mojian'</code></pre>
               </div>
               <button
                 type="button"

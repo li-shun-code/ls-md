@@ -1,11 +1,11 @@
-# 墨笺 (ls-md)
+# Mojian — AI Markdown Studio
 
 <div align="center">
 
 **现代化双引擎 AI Markdown 编辑器 · 专为高效写作与知识管理打造**
 
-[![GitHub Release](https://img.shields.io/github/v/release/li-shun-code/ls-md?style=flat-square&color=blue)](https://github.com/li-shun-code/ls-md/releases)
-[![Build & Release](https://img.shields.io/github/actions/workflow/status/li-shun-code/ls-md/build.yml?branch=main&style=flat-square)](https://github.com/li-shun-code/ls-md/actions)
+[![GitHub Release](https://img.shields.io/github/v/release/li-shun-code/mojian?style=flat-square&color=blue)](https://github.com/li-shun-code/mojian/releases)
+[![Build & Release](https://img.shields.io/github/actions/workflow/status/li-shun-code/mojian/build.yml?branch=main&style=flat-square)](https://github.com/li-shun-code/mojian/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey?style=flat-square)]()
 
@@ -79,8 +79,8 @@
 ### 安装与运行
 ```bash
 # 1. 克隆仓库
-git clone git@github.com:li-shun-code/ls-md.git
-cd ls-md
+git clone git@github.com:li-shun-code/mojian.git
+cd mojian
 
 # 2. 安装依赖
 npm install
@@ -122,7 +122,7 @@ npm run dist:mac
 
 ### 2. GitHub Actions 自动化打包
 - 每次提交或创建 Pull Request 时，GitHub Actions 会自动进行跨平台构建与测试。
-- 推送版本标签（例如 `v0.2.0`）即可自动触发云端多平台编译并在 [Releases](https://github.com/li-shun-code/ls-md/releases) 页面发布最新的安装程序。
+- 推送版本标签（例如 `v0.2.0`）即可自动触发云端多平台编译并在 [Releases](https://github.com/li-shun-code/mojian/releases) 页面发布最新的安装程序。
 
 ---
 

@@ -25,6 +25,7 @@ import { RunnerService } from './runner-service'
 import { UpdateService } from './update-service'
 import { VersionService } from './version-service'
 import { initAppLogger } from './logger'
+import { normalizeDocumentThemeId } from '../shared/document-theme-options'
 import type {
   AiRequest,
   AiSettingsInput,
@@ -47,6 +48,7 @@ let documentThemeService: DocumentThemeService
 let runnerService: RunnerService
 let updateService: UpdateService
 let versionService: VersionService
+let activeDocumentThemeId = 'github'
 
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-gpu')
@@ -196,8 +198,11 @@ function sendWorkspaceSelection(tree: WorkspaceSelection['tree'], state: WindowS
 // 注意：buildApplicationMenu 依赖路径可能因使用场景不同而改变，这里广播的主管线保持稳定。
 async function updateApplicationMenu(): Promise<void> {
   const recentFiles = recentService ? await recentService.getRecentFiles() : []
+  const documentThemes = documentThemeService ? await documentThemeService.listThemes() : []
   const menu = buildApplicationMenu(() => getFocusedState()?.window ?? null, {
     recentFiles,
+    documentThemes,
+    activeDocumentThemeId,
     onOpenRecent: (filePath) => {
       void openMarkdownFile(filePath)
     },
@@ -682,7 +687,7 @@ function registerIpc(): void {
     const htmlWithImages = await inlineLocalImageSources(html)
     const document = await HTMLtoDOCX(htmlWithImages, null, {
       title: path.basename(sourcePath, path.extname(sourcePath)),
-      creator: '墨笺',
+      creator: 'Mojian',
       lang: 'zh-CN',
       pageSize: { width: 11906, height: 16838 },
       margins: { top: 1134, right: 1134, bottom: 1134, left: 1134 },
@@ -784,6 +789,13 @@ function registerIpc(): void {
     return documentThemeService.listThemes()
   })
 
+  ipcMain.handle('document-theme:active-menu', async (event, themeId: unknown) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    if (typeof themeId !== 'string' || !themeId.trim()) throw new Error('主题 ID 无效')
+    activeDocumentThemeId = normalizeDocumentThemeId(themeId)
+    await updateApplicationMenu()
+  })
+
   ipcMain.handle('document-theme:read', async (event, themeId: string) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
     return documentThemeService.readTheme(themeId)
@@ -862,7 +874,7 @@ function registerIpc(): void {
 app.whenReady().then(async () => {
   if (!isPrimaryInstance) return
   try {
-    appLogger.info('墨笺启动', {
+    appLogger.info('Mojian 启动', {
       version: app.getVersion(),
       platform: process.platform,
       arch: process.arch,
@@ -899,14 +911,14 @@ app.whenReady().then(async () => {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    console.error('墨笺启动失败:', error)
-    dialog.showErrorBox('墨笺启动失败', `无法加载编辑器界面。\n\n${message}`)
+    console.error('Mojian 启动失败:', error)
+    dialog.showErrorBox('Mojian 启动失败', `无法加载编辑器界面。\n\n${message}`)
     app.quit()
   }
 })
 
 if (isPrimaryInstance) {
-  // 单实例：第二个实例（如「用墨笺打开」另一文件）退出，由当前窗口打开新的文档标签
+  // 单实例：第二个实例（如「用 Mojian 打开」另一文件）退出，由当前窗口打开新的文档标签
   app.on('second-instance', (_event, commandLine) => {
     const filePath = findMarkdownArgument(commandLine)
     if (!filePath) {

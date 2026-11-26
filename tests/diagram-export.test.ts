@@ -116,7 +116,7 @@ describe('diagram-export utils', () => {
 
 describe('welcome document', () => {
   it('contains comprehensive feature demonstrations', () => {
-    expect(WELCOME_DOCUMENT_MARKDOWN).toContain('欢迎使用墨笺')
+    expect(WELCOME_DOCUMENT_MARKDOWN).toContain('欢迎使用 Mojian')
     expect(WELCOME_DOCUMENT_MARKDOWN).toContain('```mermaid')
     expect(WELCOME_DOCUMENT_MARKDOWN).toContain('sequenceDiagram')
     expect(WELCOME_DOCUMENT_MARKDOWN).toContain('$E = mc^2$')

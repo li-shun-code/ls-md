@@ -501,7 +501,7 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
         {messages.map((message) => (
           <div className={`ai-message ai-message-${message.role}`} key={message.id}>
             <div className="ai-message-heading">
-              <span className="ai-message-label">{message.role === 'user' ? '你' : '墨笺助手'}</span>
+              <span className="ai-message-label">{message.role === 'user' ? '你' : 'Mojian 助手'}</span>
               {message.role === 'assistant' && message.text && <button type="button" className="ai-copy-button" aria-label="复制 AI Markdown" title="复制原始 Markdown" onClick={() => void copyMessage(message)}>{copiedMessageId === message.id ? <Check size={12} strokeWidth={2} aria-hidden="true" /> : <Copy size={12} strokeWidth={1.8} aria-hidden="true" />}{copiedMessageId === message.id ? '已复制' : '复制 Markdown'}</button>}
             </div>
             {message.role === 'assistant' && message.text ? <AiMarkdown markdown={message.text} /> : <div className="ai-message-content">{message.text || (busy && message.role === 'assistant' ? '正在思考…' : '')}</div>}
