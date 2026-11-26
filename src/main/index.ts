@@ -20,6 +20,7 @@ import { buildApplicationMenu } from './menu'
 import { RecentService } from './recent-service'
 import { RecoveryService } from './recovery-service'
 import { SettingsService } from './settings-service'
+import { DocumentThemeService } from './document-theme-service'
 import { RunnerService } from './runner-service'
 import { UpdateService } from './update-service'
 import { VersionService } from './version-service'
@@ -42,6 +43,7 @@ let recoveryService: RecoveryService
 let recentService: RecentService
 let aiService: AiService
 let settingsService: SettingsService
+let documentThemeService: DocumentThemeService
 let runnerService: RunnerService
 let updateService: UpdateService
 let versionService: VersionService
@@ -764,6 +766,29 @@ function registerIpc(): void {
     return settingsService.updateSettings(partial)
   })
 
+  ipcMain.handle('document-theme:import', async (event) => {
+    const state = stateForSender(event.sender)
+    if (!state || state.window.isDestroyed()) return null
+    const result = await dialog.showOpenDialog(state.window, {
+      title: '导入 CSS 主题',
+      properties: ['openFile'],
+      filters: [{ name: 'CSS 主题', extensions: ['css'] }],
+    })
+    const sourcePath = result.filePaths[0]
+    if (result.canceled || !sourcePath) return null
+    return documentThemeService.importTheme(sourcePath)
+  })
+
+  ipcMain.handle('document-theme:list', async (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return documentThemeService.listThemes()
+  })
+
+  ipcMain.handle('document-theme:read', async (event, themeId: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return documentThemeService.readTheme(themeId)
+  })
+
   // 应用主题同步：渲染进程切换浅色/深色后，同步 nativeTheme，使系统标题栏等原生 UI 跟随
   ipcMain.handle('app:theme', (event, theme: unknown) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
@@ -849,6 +874,7 @@ app.whenReady().then(async () => {
     recentService = new RecentService(app.getPath('userData'), 20)
     aiService = new AiService(app.getPath('userData'))
     settingsService = new SettingsService(app.getPath('userData'))
+    documentThemeService = new DocumentThemeService(app.getPath('userData'))
     runnerService = new RunnerService()
     updateService = new UpdateService({
       broadcast: (state) => {

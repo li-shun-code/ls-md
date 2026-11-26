@@ -18,6 +18,7 @@ import {
 } from '@renderer/utils/markdown'
 import type { OutlineItem } from '@renderer/utils/markdown'
 import { downloadDiagram, downloadImage, type ExportFormat } from '@renderer/utils/diagram-export'
+import { DEFAULT_DOCUMENT_THEME_ID, getBuiltInDocumentTheme, scopeDocumentThemeCss } from '@renderer/utils/document-themes'
 import { WELCOME_DOCUMENT_MARKDOWN } from '@renderer/utils/welcome-document'
 import './styles.css'
 
@@ -68,6 +69,11 @@ export function App() {
   const [aiOpen, setAiOpen] = useState(() => localStorage.getItem('markdown-desk-ai-panel') === 'open')
   const [focusMode, setFocusMode] = useState(false)
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('markdown-desk-theme') as Theme | null) ?? 'light')
+  const [documentThemeId, setDocumentThemeId] = useState(() => localStorage.getItem('markdown-desk-document-theme') ?? DEFAULT_DOCUMENT_THEME_ID)
+  const [documentThemeCss, setDocumentThemeCss] = useState(() => {
+    const savedThemeId = localStorage.getItem('markdown-desk-document-theme') ?? DEFAULT_DOCUMENT_THEME_ID
+    return getBuiltInDocumentTheme(savedThemeId)?.css ?? getBuiltInDocumentTheme(DEFAULT_DOCUMENT_THEME_ID)?.css ?? ''
+  })
   const [zoom, setZoom] = useState(1)
   const [cursor, setCursor] = useState({ line: 1, column: 1 })
   const [searchOpen, setSearchOpen] = useState(false)
@@ -628,7 +634,7 @@ export function App() {
       const body = kind === 'docx'
         ? await editorRef.current?.getHtmlForDocx() ?? ''
         : await editorRef.current?.getHtmlForExport() ?? ''
-      const html = buildExportHtml(documentTitle, body)
+      const html = buildExportHtml(documentTitle, body, documentThemeCss)
       const exported = kind === 'html'
         ? await window.desktop.exportHtml(activePath || '未命名.md', html)
         : kind === 'pdf'
@@ -638,7 +644,7 @@ export function App() {
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '导出失败')
     }
-  }, [activePath, documentTitle, markdown, showNotice])
+  }, [activePath, documentThemeCss, documentTitle, markdown, showNotice])
 
   const handleDropImage = useCallback(async (sourcePath: string) => {
     if (!workspaceRoot) {
@@ -824,6 +830,25 @@ export function App() {
   }, [theme])
 
   useEffect(() => {
+    localStorage.setItem('markdown-desk-document-theme', documentThemeId)
+    const builtInTheme = getBuiltInDocumentTheme(documentThemeId)
+    if (builtInTheme) {
+      setDocumentThemeCss(builtInTheme.css)
+      return
+    }
+
+    let cancelled = false
+    void window.desktop.readDocumentTheme(documentThemeId).then((css) => {
+      if (cancelled) return
+      if (css) setDocumentThemeCss(css)
+      else setDocumentThemeId(DEFAULT_DOCUMENT_THEME_ID)
+    }).catch(() => {
+      if (!cancelled) setDocumentThemeId(DEFAULT_DOCUMENT_THEME_ID)
+    })
+    return () => { cancelled = true }
+  }, [documentThemeId])
+
+  useEffect(() => {
     localStorage.setItem('markdown-desk-sidebar', sidebarOpen ? 'open' : 'closed')
   }, [sidebarOpen])
 
@@ -976,6 +1001,7 @@ export function App() {
 
   return (
     <div className={`app-shell theme-${theme}${focusMode ? ' is-focus-mode' : ''}${sidebarOpen ? '' : ' is-sidebar-closed'}`} style={{ '--editor-zoom': zoom } as CSSProperties}>
+      <style data-document-theme="active">{scopeDocumentThemeCss(documentThemeCss)}</style>
       <div className="workspace-layout">
         {sidebarOpen && (
           <aside className="sidebar" aria-label="文档导航">
@@ -1141,7 +1167,7 @@ export function App() {
             />
           )}
           <div className="editor-scroll">
-            <article className="editor-frame">
+            <article className={`editor-frame${mode === 'wysiwyg' ? ' mojian-document' : ''}`}>
               <MarkdownEditor
                 ref={editorRef}
                 markdown={markdown}
@@ -1386,6 +1412,8 @@ export function App() {
       <SettingsModal
         open={settingsOpen}
         initialTab={settingsTab}
+        documentThemeId={documentThemeId}
+        onDocumentThemeChange={setDocumentThemeId}
         onClose={() => setSettingsOpen(false)}
         onSettingsSaved={() => showNotice('设置已保存并生效')}
       />

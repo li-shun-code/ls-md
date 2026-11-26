@@ -1,3 +1,5 @@
+import { scopeDocumentThemeCss } from './document-themes'
+
 export type OutlineItem = {
   id: string
   level: number
@@ -73,7 +75,7 @@ export function markdownFromEditor(markdown: string, workspaceRoot: string): str
   })
 }
 
-export function buildExportHtml(title: string, body: string): string {
+export function buildExportHtml(title: string, body: string, documentThemeCss = ''): string {
   const safeTitle = title.replace(/[<>]/g, '')
   return `<!doctype html>
 <html lang="zh-CN">
@@ -95,8 +97,9 @@ export function buildExportHtml(title: string, body: string): string {
       th, td { padding: 0.5em 0.75em; border: 1px solid #dfe3e8; text-align: left; }
       .mermaid-export { margin: 1.5em 0; overflow: visible; text-align: center; }
       .mermaid-export svg { display: block; width: 100%; max-width: 100%; height: auto; margin: 0 auto; }
+      ${scopeDocumentThemeCss(documentThemeCss)}
     </style>
   </head>
-  <body>${body}</body>
+  <body><article class="mojian-document">${body}</article></body>
 </html>`
 }

@@ -226,6 +226,7 @@ function toBase64Utf8(value: string): string {
 
 async function renderMathForExport(container: HTMLElement): Promise<void> {
   await document.fonts.ready
+  const backgroundColor = getComputedStyle(container).backgroundColor
   const mathNodes = Array.from(container.querySelectorAll<HTMLElement>('[data-type="inline-math"], [data-type="block-math"]'))
   for (const node of mathNodes) {
     const latex = node.getAttribute('data-latex') ?? ''
@@ -246,7 +247,7 @@ async function renderMathForExport(container: HTMLElement): Promise<void> {
 
     try {
       const image = document.createElement('img')
-      image.src = await toPng(formula, { pixelRatio: 3, backgroundColor: '#ffffff' })
+      image.src = await toPng(formula, { pixelRatio: 3, backgroundColor })
       image.alt = '数学公式'
       image.width = Math.ceil(bounds.width)
       image.height = Math.ceil(bounds.height)
@@ -256,6 +257,54 @@ async function renderMathForExport(container: HTMLElement): Promise<void> {
       formula.replaceWith(image)
     } catch {
       formula.textContent = latex
+    }
+  }
+}
+
+const DOCX_INLINE_STYLE_PROPERTIES = [
+  'background-color',
+  'border-bottom-color',
+  'border-bottom-style',
+  'border-bottom-width',
+  'border-collapse',
+  'border-left-color',
+  'border-left-style',
+  'border-left-width',
+  'border-right-color',
+  'border-right-style',
+  'border-right-width',
+  'border-top-color',
+  'border-top-style',
+  'border-top-width',
+  'color',
+  'font-family',
+  'font-size',
+  'font-style',
+  'font-weight',
+  'line-height',
+  'list-style-type',
+  'margin-bottom',
+  'margin-left',
+  'margin-right',
+  'margin-top',
+  'max-width',
+  'padding-bottom',
+  'padding-left',
+  'padding-right',
+  'padding-top',
+  'text-align',
+  'text-decoration',
+  'vertical-align',
+  'white-space',
+] as const
+
+function inlineComputedStyles(root: HTMLElement): void {
+  const elements = [root, ...Array.from(root.querySelectorAll<HTMLElement>('*'))]
+  for (const element of elements) {
+    const computed = getComputedStyle(element)
+    for (const property of DOCX_INLINE_STYLE_PROPERTIES) {
+      const value = computed.getPropertyValue(property)
+      if (value) element.style.setProperty(property, value)
     }
   }
 }
@@ -1029,8 +1078,8 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
 
   const getHtmlForExport = useCallback(async () => {
     const container = document.createElement('div')
-    container.className = 'tiptap-editor docx-export-snapshot'
-    container.style.cssText = 'position:fixed;left:-100000px;top:0;width:880px;min-height:0;padding:48px;box-sizing:border-box;background:#fff;color:#24272b;font-family:Inter,"Microsoft YaHei",sans-serif;line-height:1.8;'
+    container.className = 'tiptap-editor docx-export-snapshot mojian-document'
+    container.style.cssText = 'position:fixed;left:-100000px;top:0;width:880px;min-height:0;padding:48px;box-sizing:border-box;'
     container.innerHTML = editor?.getHTML() ?? ''
     document.body.append(container)
 
@@ -1057,8 +1106,8 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
 
   const getHtmlForDocx = useCallback(async () => {
     const snapshot = document.createElement('div')
-    snapshot.className = 'tiptap-editor docx-export-snapshot'
-    snapshot.style.cssText = 'position:fixed;left:-100000px;top:0;width:880px;min-height:0;padding:48px;box-sizing:border-box;background:#fff;color:#24272b;font-family:Inter,"Microsoft YaHei",sans-serif;line-height:1.8;'
+    snapshot.className = 'tiptap-editor docx-export-snapshot mojian-document'
+    snapshot.style.cssText = 'position:fixed;left:-100000px;top:0;width:880px;min-height:0;padding:48px;box-sizing:border-box;'
     snapshot.innerHTML = await getHtmlForExport()
     document.body.append(snapshot)
 
@@ -1081,7 +1130,15 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
         svg.replaceWith(image)
       }
 
-      return snapshot.innerHTML
+      inlineComputedStyles(snapshot)
+      snapshot.style.removeProperty('position')
+      snapshot.style.removeProperty('left')
+      snapshot.style.removeProperty('top')
+      snapshot.style.removeProperty('width')
+      snapshot.style.removeProperty('min-height')
+      snapshot.style.removeProperty('padding')
+      snapshot.style.removeProperty('box-sizing')
+      return snapshot.outerHTML
     } finally {
       snapshot.remove()
     }

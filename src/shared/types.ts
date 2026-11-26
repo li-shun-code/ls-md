@@ -128,6 +128,15 @@ export type AppSettings = {
   ai: AiSettings
 }
 
+export type DocumentThemeSummary = {
+  id: string
+  name: string
+}
+
+export type ImportedDocumentTheme = DocumentThemeSummary & {
+  css: string
+}
+
 export type AiRequest = {
   requestId: string
   operation: AiOperation
@@ -247,6 +256,9 @@ export type DesktopBridge = {
   getSettings: () => Promise<AppSettings>
   updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>
   setTheme: (theme: 'light' | 'dark') => Promise<void>
+  importDocumentTheme: () => Promise<ImportedDocumentTheme | null>
+  listDocumentThemes: () => Promise<DocumentThemeSummary[]>
+  readDocumentTheme: (id: string) => Promise<string | null>
   detectEnvironments: (forceRefresh?: boolean) => Promise<Record<string, { available: boolean; path?: string; version?: string }>>
   executeCode: (request: ExecutionRequest) => Promise<ExecutionResult>
   cancelExecution: (executionId: string) => Promise<boolean>

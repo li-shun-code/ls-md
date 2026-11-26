@@ -8,6 +8,7 @@ import {
   EyeOff,
   Info,
   Loader2,
+  Palette,
   Play,
   Plus,
   RefreshCw,
@@ -18,8 +19,9 @@ import {
   X,
 } from 'lucide-react'
 import type { AppSettings, ExecutionRequest, RunnerDefinition, UpdateState } from '@shared/types'
+import { DocumentThemesTab } from '@renderer/components/DocumentThemesTab'
 
-export type SettingsTab = 'runners' | 'ai' | 'writing' | 'about'
+export type SettingsTab = 'runners' | 'ai' | 'writing' | 'theme' | 'about'
 
 const UPDATE_STATUS_TEXT: Record<UpdateState['status'], string> = {
   idle: '',
@@ -35,6 +37,8 @@ const UPDATE_STATUS_TEXT: Record<UpdateState['status'], string> = {
 export type SettingsModalProps = {
   open: boolean
   initialTab?: SettingsTab
+  documentThemeId: string
+  onDocumentThemeChange: (themeId: string) => void
   onClose: () => void
   onSettingsSaved?: (settings: AppSettings) => void
 }
@@ -111,6 +115,8 @@ function getDetectedStatus(
 export function SettingsModal({
   open,
   initialTab = 'runners',
+  documentThemeId,
+  onDocumentThemeChange,
   onClose,
   onSettingsSaved,
 }: SettingsModalProps) {
@@ -594,6 +600,16 @@ export function SettingsModal({
             <button
               type="button"
               role="tab"
+              aria-selected={activeTab === 'theme'}
+              className={`settings-modal-tab${activeTab === 'theme' ? ' is-active' : ''}`}
+              onClick={() => setActiveTab('theme')}
+            >
+              <Palette size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span>主题</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={activeTab === 'about'}
               className={`settings-modal-tab${activeTab === 'about' ? ' is-active' : ''}`}
               onClick={() => setActiveTab('about')}
@@ -979,6 +995,13 @@ export function SettingsModal({
             </div>
           )}
 
+          {activeTab === 'theme' && (
+            <DocumentThemesTab
+              selectedThemeId={documentThemeId}
+              onSelectTheme={onDocumentThemeChange}
+            />
+          )}
+
           {activeTab === 'about' && (
             <div className="settings-about-tab">
               <p className="settings-section-desc">
@@ -1059,25 +1082,35 @@ export function SettingsModal({
 
         <div className="settings-modal-footer">
           <div className="settings-modal-status">
-            {saveStatus && <span className="settings-save-status">{saveStatus}</span>}
+            {activeTab === 'theme'
+              ? <span className="settings-save-status">主题选择会立即应用并自动保存。</span>
+              : saveStatus && <span className="settings-save-status">{saveStatus}</span>}
           </div>
           <div className="settings-modal-footer-actions">
-            <button
-              type="button"
-              className="settings-modal-btn"
-              onClick={onClose}
-              disabled={isSaving}
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              className="settings-modal-btn is-primary"
-              onClick={() => void handleSaveSettings()}
-              disabled={isSaving}
-            >
-              {isSaving ? '正在保存…' : '保存设置'}
-            </button>
+            {activeTab === 'theme' ? (
+              <button type="button" className="settings-modal-btn is-primary" onClick={onClose}>
+                完成
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="settings-modal-btn"
+                  onClick={onClose}
+                  disabled={isSaving}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="settings-modal-btn is-primary"
+                  onClick={() => void handleSaveSettings()}
+                  disabled={isSaving}
+                >
+                  {isSaving ? '正在保存…' : '保存设置'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
