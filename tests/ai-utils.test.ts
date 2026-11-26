@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractAiCitations, normalizeAiBaseUrl, parseAiStreamData } from '../src/main/ai-utils'
+import { extractAiCitations, normalizeAiBaseUrl, parseAiStreamChunk, parseAiStreamData } from '../src/main/ai-utils'
 
 describe('AI utilities', () => {
   it('normalizes only HTTP and HTTPS base URLs', () => {
@@ -12,6 +12,13 @@ describe('AI utilities', () => {
     expect(parseAiStreamData('{"choices":[{"delta":{"content":"你好"}}]}')).toBe('你好')
     expect(parseAiStreamData('{"choices":[{"message":{"content":"完成"}}]}')).toBe('完成')
     expect(parseAiStreamData('[DONE]')).toBe('')
+  })
+
+  it('parses streamed function tool call fragments', () => {
+    expect(parseAiStreamChunk('{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_document_range","arguments":"{\\"start_line\\":"}}]}}]}')).toEqual({
+      content: '',
+      toolCalls: [{ index: 0, id: 'call-1', name: 'read_document_range', arguments: '{"start_line":' }],
+    })
   })
 
   it('maps only valid source markers to document citations', () => {

@@ -2,12 +2,13 @@ import { memo, useEffect, useMemo, useRef, useState, type RefObject } from 'reac
 import { Check, Copy, History, Plus, RotateCcw, Send, Settings2, Sparkles, Square, Trash2, X } from 'lucide-react'
 import type {
   AiCitation,
+  AiDocumentEdit,
   AiMessage,
   AiOperation,
   AiSelection,
   AiSettings,
 } from '@shared/types'
-import { retrieveContext } from '@renderer/utils/ai-context'
+import { applyDocumentEdits } from '@shared/ai-document-tools'
 import { renderAiMarkdown } from '@renderer/utils/ai-markdown'
 import type { EditorCommands } from '@renderer/components/MarkdownEditor'
 
@@ -35,6 +36,7 @@ type RequestState = {
   assistantId: string
   selection: AiSelection | null
   original: string
+  documentSnapshot: string
   answer: string
 }
 
@@ -42,6 +44,7 @@ type PendingEdit = {
   operation: AiOperation
   original: string
   replacement: string
+  edits?: AiDocumentEdit[]
 }
 
 type AiSession = {
@@ -154,6 +157,8 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
   const [error, setError] = useState('')
   const [pendingEdit, setPendingEdit] = useState<PendingEdit | null>(null)
   const requestRef = useRef<RequestState | null>(null)
+  const markdownRef = useRef(markdown)
+  markdownRef.current = markdown
   const messageEndRef = useRef<HTMLDivElement>(null)
   const sessionsRef = useRef(sessions)
 
@@ -219,12 +224,34 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
       return
     }
 
+    if (event.type === 'tool') {
+      setStatus(event.label)
+      return
+    }
+
+    if (event.type === 'edit') {
+      if (markdownRef.current !== request.documentSnapshot) {
+        setError('AI 处理期间正文发生了变化，请重新发送请求以生成新的预览')
+        setStatus('修改预览已取消')
+      } else {
+        try {
+          const replacement = applyDocumentEdits(request.documentSnapshot, event.edits)
+          setPendingEdit({ operation: 'rewrite', original: request.documentSnapshot, replacement, edits: event.edits })
+          setStatus('修改已准备好，请检查预览')
+        } catch (editError) {
+          setError(editError instanceof Error ? editError.message : '无法生成修改预览')
+          setStatus('修改预览失败')
+        }
+      }
+      return
+    }
+
     if (event.type === 'done') {
       setMessages((current) => current.map((message) => (
         message.id === request.assistantId ? { ...message, citations: event.citations } : message
       )))
       const result = request.answer
-      if (request.operation !== 'qa' && request.operation !== 'summarize') {
+      if (!['qa', 'summarize', 'rewrite', 'continue'].includes(request.operation)) {
         setPendingEdit({ operation: request.operation, original: request.original, replacement: result })
       }
       setStatus('生成完成')
@@ -248,7 +275,7 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
   }, [messages.length, pendingEdit])
 
   const hasConfiguration = Boolean(settings?.apiKeyConfigured && settings.model)
-  const diff = useMemo(() => pendingEdit ? diffText(pendingEdit.original, pendingEdit.replacement) : null, [pendingEdit])
+  const diff = useMemo(() => pendingEdit && !pendingEdit.edits ? diffText(pendingEdit.original, pendingEdit.replacement) : null, [pendingEdit])
   const history = useMemo(() => sessions
     .filter((session) => session.documentKey === documentKey && session.messages.length > 0)
     .sort((left, right) => right.updatedAt - left.updatedAt), [documentKey, sessions])
@@ -291,8 +318,6 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
 
     const requestId = makeId('ai')
     const assistantId = makeId('assistant')
-    const contextQuery = [prompt, selection?.text].filter(Boolean).join('\n')
-    const context = requestOperation === 'rewrite' ? [] : retrieveContext(markdown, contextQuery)
     const history: AiMessage[] = messages.map(({ role, text }) => ({ role, content: text })).filter((message) => message.content)
     const request: RequestState = {
       requestId,
@@ -300,6 +325,7 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
       assistantId,
       selection,
       original: requestOperation === 'rewrite' ? markdown : selection?.text ?? '',
+      documentSnapshot: markdown,
       answer: '',
     }
     const userMessage: PanelMessage = { id: makeId('user'), role: 'user', text: prompt || `请${operationLabel(requestOperation)}`, citations: [] }
@@ -327,8 +353,7 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
         prompt: prompt || `请${operationLabel(requestOperation)}当前文档`,
         documentTitle,
         history,
-        context,
-        ...(requestOperation === 'rewrite' ? { documentContent: markdown } : {}),
+        documentSnapshot: markdown,
         ...(selection ? { selection } : {}),
       })
       setStatus('正在生成…')
@@ -403,6 +428,11 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
 
   const applyEdit = () => {
     if (!pendingEdit) return
+    if (pendingEdit.operation === 'rewrite' && pendingEdit.original !== markdown) {
+      setError('预览生成后正文发生了变化，请重新发送请求')
+      setPendingEdit(null)
+      return
+    }
     if (pendingEdit.operation === 'rewrite') editorRef.current?.replaceDocument(pendingEdit.replacement)
     else editorRef.current?.replaceSelection(pendingEdit.replacement)
     setPendingEdit(null)
@@ -461,7 +491,7 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
           <div className="ai-empty-state">
             <Sparkles size={24} strokeWidth={1.5} aria-hidden="true" />
             <strong>从当前文档开始</strong>
-            <p>问答只会使用当前 Markdown 文档的相关片段。</p>
+            <p>AI 会按需搜索、读取正文；修改先预览，再由你应用。</p>
             <div className="ai-quick-actions">
               <button type="button" onClick={() => void send('summarize')}>总结文档</button>
               <button type="button" onClick={() => void send('continue')}>继续写作</button>
@@ -491,7 +521,7 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
         <div ref={messageEndRef} />
       </div>
 
-      {pendingEdit && diff && (
+      {pendingEdit && (diff || pendingEdit.edits) && (
         <section className="ai-diff-preview" aria-label="AI 修改预览">
           <div className="ai-diff-heading">
             <span>修改预览 · {operationLabel(pendingEdit.operation)}</span>
@@ -499,7 +529,17 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
               <RotateCcw size={15} strokeWidth={1.8} aria-hidden="true" />
             </button>
           </div>
-          <div className="ai-diff-content"><span>{diff.before}</span>{diff.removed && <del>{diff.removed}</del>}{diff.added && <ins>{diff.added}</ins>}<span>{diff.after}</span></div>
+          <div className="ai-diff-content">
+            {pendingEdit.edits
+              ? pendingEdit.edits.map((edit, index) => (
+                <div className="ai-diff-change" key={`${edit.startLine}-${index}`}>
+                  <small>{edit.endLine < edit.startLine ? `在第 ${edit.startLine} 行前插入` : `第 ${edit.startLine}-${edit.endLine} 行`}</small>
+                  {edit.original && <del>{edit.original}</del>}
+                  {edit.replacement && <ins>{edit.replacement}</ins>}
+                </div>
+              ))
+              : diff && <><span>{diff.before}</span>{diff.removed && <del>{diff.removed}</del>}{diff.added && <ins>{diff.added}</ins>}<span>{diff.after}</span></>}
+          </div>
           <div className="ai-diff-actions">
             <button type="button" className="ai-primary-button" onClick={applyEdit}><Check size={14} strokeWidth={2} aria-hidden="true" />应用修改</button>
             <button type="button" className="ai-text-button" onClick={() => setPendingEdit(null)}>取消</button>

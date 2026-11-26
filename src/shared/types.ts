@@ -134,13 +134,21 @@ export type AiRequest = {
   prompt: string
   documentTitle: string
   history: AiMessage[]
-  context: AiContextChunk[]
-  documentContent?: string
+  documentSnapshot?: string
   selection?: AiSelection
+}
+
+export type AiDocumentEdit = {
+  startLine: number
+  endLine: number
+  original: string
+  replacement: string
 }
 
 export type AiStreamEvent =
   | { requestId: string; type: 'delta'; text: string }
+  | { requestId: string; type: 'tool'; label: string }
+  | { requestId: string; type: 'edit'; edits: AiDocumentEdit[] }
   | { requestId: string; type: 'done'; citations: AiCitation[] }
   | { requestId: string; type: 'error'; message: string }
 

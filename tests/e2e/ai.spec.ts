@@ -12,53 +12,75 @@ async function launchTestApp() {
   return { app, userDataPath }
 }
 
-test('opens the AI panel, streams a current-document answer, and jumps to its citation', async () => {
-  const requestBodies: string[] = []
+test('reads the current document through tools, remembers the conversation, and previews edits', async () => {
+  const requestBodies: Array<{
+    stream?: boolean
+    tools?: Array<{ function?: { name?: string } }>
+    messages: Array<{ role?: string; content?: string | null; tool_call_id?: string }>
+  }> = []
+  let toolCallIndex = 0
   const server = createServer((request, response) => {
     let requestBody = ''
     request.on('data', (chunk) => { requestBody += String(chunk) })
     request.on('end', () => {
-      requestBodies.push(requestBody)
-      const body = JSON.parse(requestBody) as {
-        stream?: boolean
-        messages: Array<{ role?: string; content: string }>
-      }
+      const body = JSON.parse(requestBody) as (typeof requestBodies)[number]
+      requestBodies.push(body)
       if (body.stream === false) {
         response.writeHead(200, { 'Content-Type': 'application/json' })
         response.end(JSON.stringify({ choices: [{ message: { content: '- 使用简洁、清晰的中文表达。' } }] }))
         return
       }
-      const latestContent = body.messages.at(-1)?.content ?? ''
+      const latestContent = [...body.messages].filter((message) => message.role === 'user').at(-1)?.content ?? ''
       const systemContent = body.messages[0]?.content ?? ''
+      const toolCount = body.messages.filter((message) => message.role === 'tool').length
       const isPolish = latestContent.includes('操作：润色')
-      const isProofread = latestContent.includes('操作：纠错')
+      const isProofread = latestContent.includes('操作：纠正选中')
       const isFollowUp = latestContent.includes('我刚才问了什么')
-      const hasPriorQuestion = body.messages.some((message) => message.role === 'user' && message.content.includes('当前文档讲了什么？'))
+      const hasPriorQuestion = body.messages.some((message) => message.role === 'user' && message.content?.includes('当前文档讲了什么？'))
+      const isDocumentQuestion = latestContent.includes('当前文档讲了什么？')
       const isSectionRewrite = latestContent.includes('请改写文档中的结论部分。')
-      const isRewrite = latestContent.includes('操作：按用户要求改写当前完整 Markdown 文档')
+      const isRewrite = latestContent.includes('请按我的风格改写整篇文档。')
       const includesWritingMemory = systemContent.includes('使用简洁、清晰的中文表达')
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
-      const answer = isFollowUp && hasPriorQuestion && systemContent.includes('根据最近的会话历史回答')
-        ? '你刚才问的是“当前文档讲了什么？”。'
-        : isRewrite && includesWritingMemory
-          ? '# 风格改写\n\n这是按偏好改写后的全文。\n\n这是只应发送给 AI 的内容。'
-          : isSectionRewrite
-            ? '好的，我可以只修改结论部分。'
-          : isPolish
-            ? '改写后的内容'
-            : isProofread
-              ? '纠错后的内容'
-              : '## 回答\n\n这是回答。'
-      response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: answer } }] })}\n\n`)
-      if (!isPolish && !isProofread && !isFollowUp && !isRewrite) response.write('data: {"choices":[{"delta":{"content":" [来源:doc-chunk-1]"}}]}\n\n')
-      response.end('data: [DONE]\n\n')
+      const finishText = (answer: string) => {
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: answer } }] })}\n\n`)
+        response.end('data: [DONE]\n\n')
+      }
+      const callTool = (name: string, args: Record<string, unknown>) => {
+        toolCallIndex += 1
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: `call-${toolCallIndex}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] })}\n\n`)
+        response.end('data: [DONE]\n\n')
+      }
+
+      if (isFollowUp && hasPriorQuestion && systemContent.includes('最近的会话历史')) {
+        finishText('你刚才问的是“当前文档讲了什么？”。')
+      } else if (isDocumentQuestion) {
+        if (toolCount === 0) callTool('get_document_outline', {})
+        else if (toolCount === 1) callTool('read_document_range', { start_line: 3, end_line: 3 })
+        else finishText('## 回答\n\n这是回答。')
+      } else if (isSectionRewrite) {
+        if (toolCount === 0) callTool('search_document', { query: '结论' })
+        else if (toolCount === 1) callTool('edit_document_range', { start_line: 11, end_line: 11, replacement: '这是按偏好改写后的结论。' })
+        else finishText('我已按你的写作偏好改写结论。')
+      } else if (isRewrite) {
+        if (toolCount === 0) callTool('get_document_outline', {})
+        else if (toolCount === 1) callTool('read_document_range', { start_line: 1, end_line: 11 })
+        else if (toolCount === 2 && includesWritingMemory) callTool('edit_document_range', { start_line: 1, end_line: 11, replacement: '# 风格改写\n\n这是按偏好改写后的全文。\n\n这是只应发送给 AI 的内容。' })
+        else finishText('我已根据你的写作风格改写全文。')
+      } else if (isPolish) {
+        finishText('改写后的内容')
+      } else if (isProofread) {
+        finishText('纠错后的内容')
+      } else {
+        finishText('## 回答\n\n这是回答。')
+      }
     })
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const port = (server.address() as AddressInfo).port
   const { app, userDataPath } = await launchTestApp()
   const documentPath = path.join(userDataPath, 'ai-e2e.md')
-  const initialDocument = '# 当前文档\n\n这是只应发送给 AI 的内容。\n\n## 第二节\n\n更多说明。'
+  const initialDocument = '# 当前文档\n\n这是只应发送给 AI 的内容。\n\n## 第二节\n\n更多说明。\n\n## 结论\n\n原始结论。'
 
   try {
     await writeFile(documentPath, initialDocument, 'utf8')
@@ -85,26 +107,26 @@ test('opens the AI panel, streams a current-document answer, and jumps to its ci
     const input = page.getByRole('textbox', { name: '询问 AI' })
     await input.fill('当前文档讲了什么？')
     await input.press('Enter')
-    await expect(page.getByText('这是回答。 [来源:doc-chunk-1]')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('这是回答。')).toBeVisible({ timeout: 15_000 })
     await expect(page.locator('.ai-message-markdown h2')).toHaveText('回答')
-    await expect(page.getByRole('button', { name: /当前文档.*第 1-7 行/ })).toBeVisible()
+    await expect(page.locator('.ai-citations')).toHaveCount(0)
 
     await input.fill('我刚才问了什么？')
     await input.press('Enter')
     await expect(page.getByText('你刚才问的是“当前文档讲了什么？”。')).toBeVisible({ timeout: 15_000 })
-    const followUpBody = JSON.parse(requestBodies[1]) as { messages: Array<{ role: string; content: string }> }
-    expect(followUpBody.messages[0]?.content).toContain('根据最近的会话历史回答')
-    expect(followUpBody.messages.some((message) => message.role === 'user' && message.content.includes('当前文档讲了什么？'))).toBe(true)
+    const followUpBody = requestBodies.find((body) => body.messages.at(-1)?.role === 'user' && body.messages.at(-1)?.content?.includes('我刚才问了什么'))
+    expect(followUpBody?.messages[0]?.content).toContain('最近的会话历史')
+    expect(followUpBody?.messages.some((message) => message.role === 'user' && message.content?.includes('当前文档讲了什么？'))).toBe(true)
 
     await page.getByRole('button', { name: 'AI 历史会话' }).click()
     await expect(page.locator('.ai-history')).toBeVisible()
     await expect(page.getByRole('button', { name: /当前文档讲了什么/ })).toBeVisible()
     await page.getByRole('button', { name: /当前文档讲了什么/ }).click()
 
-    const body = JSON.parse(requestBodies[0]) as { messages: Array<{ content: string }> }
-    expect(body.messages.at(-1)?.content).toContain('这是只应发送给 AI 的内容。')
-    await page.getByRole('button', { name: /当前文档.*第 1-7 行/ }).click()
-    await expect(page.locator('.tiptap-editor')).toBeFocused()
+    const firstQuestionRequest = requestBodies.find((body) => body.messages.at(-1)?.role === 'user' && body.messages.at(-1)?.content?.includes('当前文档讲了什么？'))
+    expect(firstQuestionRequest?.tools?.map((tool) => tool.function?.name)).toContain('read_document_range')
+    expect(JSON.stringify(firstQuestionRequest?.messages)).not.toContain('这是只应发送给 AI 的内容。')
+    expect(requestBodies.some((body) => body.messages.some((message) => message.role === 'tool' && message.content?.includes('这是只应发送给 AI 的内容。')))).toBe(true)
 
     await page.getByRole('button', { name: 'AI 模型设置' }).click()
     const settings = page.locator('.settings-modal-card')
@@ -121,15 +143,18 @@ test('opens the AI panel, streams a current-document answer, and jumps to its ci
 
     await input.fill('请改写文档中的结论部分。')
     await input.press('Enter')
-    await expect(page.getByText('好的，我可以只修改结论部分。 [来源:doc-chunk-1]')).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByLabel('AI 修改预览')).toHaveCount(0)
+    await expect(page.getByLabel('AI 修改预览').getByText('这是按偏好改写后的结论。')).toBeVisible({ timeout: 15_000 })
+    await page.getByRole('button', { name: '应用修改' }).click()
+    await expect(page.locator('.tiptap-editor')).toContainText('这是按偏好改写后的结论。')
+    await expect.poll(async () => readFile(documentPath, 'utf8')).toContain('这是按偏好改写后的结论。')
 
     await input.fill('请按我的风格改写整篇文档。')
     await input.press('Enter')
     await expect(page.getByLabel('AI 修改预览').getByText('这是按偏好改写后的全文。')).toBeVisible({ timeout: 15_000 })
-    const rewriteBody = JSON.parse(requestBodies[4]) as { messages: Array<{ role: string; content: string }> }
-    expect(rewriteBody.messages[0]?.content).toContain('使用简洁、清晰的中文表达')
-    expect(rewriteBody.messages.at(-1)?.content).toContain('这是只应发送给 AI 的内容。')
+    const rewriteRequest = requestBodies.find((body) => body.messages.at(-1)?.role === 'user' && body.messages.at(-1)?.content?.includes('请按我的风格改写整篇文档。'))
+    expect(rewriteRequest?.messages[0]?.content).toContain('使用简洁、清晰的中文表达')
+    expect(JSON.stringify(rewriteRequest?.messages)).not.toContain('这是只应发送给 AI 的内容。')
+    expect(requestBodies.some((body) => body.messages.some((message) => message.role === 'tool' && message.content?.includes('原始结论。')))).toBe(true)
     await page.getByRole('button', { name: '应用修改' }).click()
     await expect(page.locator('.tiptap-editor')).toContainText('这是按偏好改写后的全文。')
     await expect.poll(async () => readFile(documentPath, 'utf8')).toContain('这是按偏好改写后的全文。')
@@ -137,8 +162,8 @@ test('opens the AI panel, streams a current-document answer, and jumps to its ci
     await page.getByRole('button', { name: '文档版本' }).click()
     const versionModal = page.getByRole('dialog', { name: '版本历史' })
     await expect(versionModal).toBeVisible()
-    await expect(versionModal.getByRole('button', { name: /自动保存前/ })).toBeVisible()
-    await versionModal.getByRole('button', { name: /自动保存前/ }).click()
+    await expect(versionModal.getByRole('button', { name: /自动保存前/ })).toHaveCount(2)
+    await versionModal.getByRole('button', { name: /自动保存前/ }).last().click()
     await versionModal.getByRole('button', { name: '恢复此版本' }).click()
     await expect(versionModal).not.toBeVisible()
     await expect.poll(async () => readFile(documentPath, 'utf8')).toBe(initialDocument)

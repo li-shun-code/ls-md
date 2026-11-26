@@ -15,18 +15,50 @@ export function normalizeAiBaseUrl(value: string): string {
 }
 
 export function parseAiStreamData(data: string): string {
-  if (data.trim() === '[DONE]') return ''
+  return parseAiStreamChunk(data)?.content ?? ''
+}
+
+export type AiToolCallDelta = {
+  index: number
+  id?: string
+  name?: string
+  arguments?: string
+}
+
+export type ParsedAiStreamChunk = {
+  content: string
+  toolCalls: AiToolCallDelta[]
+}
+
+export function parseAiStreamChunk(data: string): ParsedAiStreamChunk | null {
+  if (data.trim() === '[DONE]') return null
 
   try {
     const payload = JSON.parse(data) as {
       choices?: Array<{
-        delta?: { content?: string }
+        delta?: {
+          content?: string
+          tool_calls?: Array<{
+            index?: number
+            id?: string
+            function?: { name?: string; arguments?: string }
+          }>
+        }
         message?: { content?: string }
       }>
     }
-    return payload.choices?.[0]?.delta?.content ?? payload.choices?.[0]?.message?.content ?? ''
+    const choice = payload.choices?.[0]
+    return {
+      content: choice?.delta?.content ?? choice?.message?.content ?? '',
+      toolCalls: choice?.delta?.tool_calls?.map((toolCall, index) => ({
+        index: toolCall.index ?? index,
+        ...(toolCall.id ? { id: toolCall.id } : {}),
+        ...(toolCall.function?.name ? { name: toolCall.function.name } : {}),
+        ...(toolCall.function?.arguments ? { arguments: toolCall.function.arguments } : {}),
+      })) ?? [],
+    }
   } catch {
-    return ''
+    return null
   }
 }
 

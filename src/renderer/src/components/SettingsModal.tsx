@@ -436,7 +436,7 @@ export function SettingsModal({
         prompt: 'ping',
         documentTitle: 'ConnectionTest',
         history: [],
-        context: [],
+        documentSnapshot: '',
       })
     } catch (err) {
       if (!finished) {

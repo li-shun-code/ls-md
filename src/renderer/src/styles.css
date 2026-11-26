@@ -2065,6 +2065,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 }
 .ai-diff-content del { color: var(--danger); background: var(--danger-soft); text-decoration-thickness: 1px; }
 .ai-diff-content ins { color: var(--success); background: var(--success-soft); text-decoration: none; }
+.ai-diff-change + .ai-diff-change { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.ai-diff-change small { display: block; margin-bottom: 5px; color: var(--subtle); font-family: inherit; font-size: 10px; }
+.ai-diff-change del, .ai-diff-change ins { display: block; padding: 3px 5px; }
 
 .ai-action-row {
   display: flex;
