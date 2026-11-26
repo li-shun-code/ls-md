@@ -68,6 +68,7 @@ export function buildApplicationMenu(
         { type: 'separator' },
         command('导出为 HTML…', 'file.exportHtml'),
         command('导出为 PDF…', 'file.exportPdf'),
+        command('导出为 Word…', 'file.exportDocx'),
         command('打印…', 'file.print', 'Ctrl+P'),
         { type: 'separator' },
         { role: 'quit', label: '退出' },

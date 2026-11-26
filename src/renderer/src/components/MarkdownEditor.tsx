@@ -15,7 +15,9 @@ import Typography from '@tiptap/extension-typography'
 import Highlight from '@tiptap/extension-highlight'
 import { Mathematics } from '@tiptap/extension-mathematics'
 import 'katex/dist/katex.min.css'
+import katex from 'katex'
 import mermaid from 'mermaid'
+import { toPng } from 'html-to-image'
 import { common, createLowlight } from 'lowlight'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { TextSelection } from '@tiptap/pm/state'
@@ -92,6 +94,7 @@ export type EditorCommands = {
   loadMarkdown: (markdown: string) => void
   getHtml: () => string
   getHtmlForExport: () => Promise<string>
+  getHtmlForDocx: () => Promise<string>
   toggleBold: () => void
   toggleItalic: () => void
   toggleStrike: () => void
@@ -211,6 +214,51 @@ function formatLanguage(rawLang?: string): string {
 }
 
 let mermaidDiagramId = 0
+
+function toBase64Utf8(value: string): string {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  }
+  return btoa(binary)
+}
+
+async function renderMathForExport(container: HTMLElement): Promise<void> {
+  await document.fonts.ready
+  const mathNodes = Array.from(container.querySelectorAll<HTMLElement>('[data-type="inline-math"], [data-type="block-math"]'))
+  for (const node of mathNodes) {
+    const latex = node.getAttribute('data-latex') ?? ''
+    const displayMode = node.dataset.type === 'block-math'
+    const formula = document.createElement(displayMode ? 'div' : 'span')
+    formula.className = 'tiptap-mathematics-render'
+    formula.style.cssText = displayMode
+      ? 'display:table;max-width:100%;margin:1em auto;'
+      : 'display:inline-block;vertical-align:middle;'
+    katex.render(latex, formula, { throwOnError: false, displayMode })
+    node.replaceWith(formula)
+
+    const bounds = formula.getBoundingClientRect()
+    if (!bounds.width || !bounds.height) {
+      formula.textContent = latex
+      continue
+    }
+
+    try {
+      const image = document.createElement('img')
+      image.src = await toPng(formula, { pixelRatio: 3, backgroundColor: '#ffffff' })
+      image.alt = '数学公式'
+      image.width = Math.ceil(bounds.width)
+      image.height = Math.ceil(bounds.height)
+      image.style.cssText = displayMode
+        ? `display:block;width:${bounds.width}px;height:${bounds.height}px;max-width:100%;margin:1em auto;`
+        : `display:inline-block;width:${bounds.width}px;height:${bounds.height}px;vertical-align:middle;`
+      formula.replaceWith(image)
+    } catch {
+      formula.textContent = latex
+    }
+  }
+}
 
 function createMermaidNodeView(node: ProseMirrorNode, onOpenPreview?: (preview: EditorPreview) => void) {
   const dom = document.createElement('div')
@@ -979,19 +1027,14 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
     }
   }, [editor, markdown, mode, workspaceRoot])
 
-  useImperativeHandle(ref, () => ({
-    focus: () => {
-      if (mode === 'source') sourceRef.current?.focus()
-      else editor?.commands.focus()
-    },
-    loadMarkdown: (nextMarkdown) => {
-      lastEditorMarkdownRef.current = nextMarkdown
-      editor?.commands.setContent(markdownForEditor(nextMarkdown, workspaceRoot), { emitUpdate: false, contentType: 'markdown' })
-    },
-    getHtml: () => editor?.getHTML() ?? '',
-    getHtmlForExport: async () => {
-      const container = document.createElement('div')
-      container.innerHTML = editor?.getHTML() ?? ''
+  const getHtmlForExport = useCallback(async () => {
+    const container = document.createElement('div')
+    container.className = 'tiptap-editor docx-export-snapshot'
+    container.style.cssText = 'position:fixed;left:-100000px;top:0;width:880px;min-height:0;padding:48px;box-sizing:border-box;background:#fff;color:#24272b;font-family:Inter,"Microsoft YaHei",sans-serif;line-height:1.8;'
+    container.innerHTML = editor?.getHTML() ?? ''
+    document.body.append(container)
+
+    try {
       const mermaidBlocks = Array.from(container.querySelectorAll('pre > code.language-mermaid'))
       for (const code of mermaidBlocks) {
         try {
@@ -1004,8 +1047,58 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
           // Keep the source block in the export when a diagram cannot be rendered.
         }
       }
+
+      await renderMathForExport(container)
       return container.innerHTML
+    } finally {
+      container.remove()
+    }
+  }, [editor])
+
+  const getHtmlForDocx = useCallback(async () => {
+    const snapshot = document.createElement('div')
+    snapshot.className = 'tiptap-editor docx-export-snapshot'
+    snapshot.style.cssText = 'position:fixed;left:-100000px;top:0;width:880px;min-height:0;padding:48px;box-sizing:border-box;background:#fff;color:#24272b;font-family:Inter,"Microsoft YaHei",sans-serif;line-height:1.8;'
+    snapshot.innerHTML = await getHtmlForExport()
+    document.body.append(snapshot)
+
+    try {
+      await document.fonts.ready
+      const diagrams = Array.from(snapshot.querySelectorAll<SVGElement>('.mermaid-export svg'))
+      for (const svg of diagrams) {
+        const bounds = svg.getBoundingClientRect()
+        const svgForWord = svg.cloneNode(true) as SVGElement
+        svgForWord.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+        svgForWord.setAttribute('width', String(Math.max(1, Math.ceil(bounds.width))))
+        svgForWord.setAttribute('height', String(Math.max(1, Math.ceil(bounds.height))))
+        const dataUrl = `data:image/svg+xml;base64,${toBase64Utf8(svgForWord.outerHTML)}`
+        const image = document.createElement('img')
+        image.src = dataUrl
+        image.alt = '流程图'
+        image.width = Math.max(1, Math.ceil(bounds.width))
+        image.height = Math.max(1, Math.ceil(bounds.height))
+        image.style.cssText = `display:block;width:${Math.min(bounds.width, 880)}px;max-width:100%;height:auto;margin:1.5em auto;`
+        svg.replaceWith(image)
+      }
+
+      return snapshot.innerHTML
+    } finally {
+      snapshot.remove()
+    }
+  }, [getHtmlForExport])
+
+  useImperativeHandle(ref, () => ({
+    focus: () => {
+      if (mode === 'source') sourceRef.current?.focus()
+      else editor?.commands.focus()
     },
+    loadMarkdown: (nextMarkdown) => {
+      lastEditorMarkdownRef.current = nextMarkdown
+      editor?.commands.setContent(markdownForEditor(nextMarkdown, workspaceRoot), { emitUpdate: false, contentType: 'markdown' })
+    },
+    getHtml: () => editor?.getHTML() ?? '',
+    getHtmlForExport,
+    getHtmlForDocx,
     toggleBold: () => editor?.chain().focus().toggleBold().run(),
     toggleItalic: () => editor?.chain().focus().toggleItalic().run(),
     toggleStrike: () => editor?.chain().focus().toggleStrike().run(),
@@ -1135,7 +1228,7 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
         })
       })
     },
-  }), [editor, mode, workspaceRoot])
+  }), [editor, getHtmlForDocx, getHtmlForExport, mode, workspaceRoot])
 
   if (mode === 'source') {
     const lineCount = Math.max(1, markdown.split(/\r?\n/).length)

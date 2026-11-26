@@ -1,6 +1,7 @@
 import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeTheme, shell, webContents } from 'electron'
+import HTMLtoDOCX from '@turbodocx/html-to-docx'
 import { watch, type FSWatcher } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -407,6 +408,37 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   rs: 'rust',
 }
 
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+}
+
+async function inlineLocalImageSources(html: string): Promise<string> {
+  const pattern = /(<img\b[^>]*?\bsrc\s*=\s*)(["'])(.*?)\2/gi
+  let cursor = 0
+  let result = ''
+  for (const match of html.matchAll(pattern)) {
+    const index = match.index ?? cursor
+    const source = match[3]
+    let replacement = match[0]
+    if (/^file:/i.test(source)) {
+      const imagePath = fileURLToPath(new URL(source))
+      const mimeType = IMAGE_MIME_TYPES[path.extname(imagePath).toLowerCase()]
+      if (!mimeType) throw new Error(`Word 导出不支持此图片格式：${path.extname(imagePath) || '未知格式'}`)
+      const imageData = await readFile(imagePath)
+      replacement = `${match[1]}${match[2]}data:${mimeType};base64,${imageData.toString('base64')}${match[2]}`
+    }
+    result += html.slice(cursor, index) + replacement
+    cursor = index + match[0].length
+  }
+  return result + html.slice(cursor)
+}
+
 function registerIpc(): void {
   ipcMain.handle('workspace:choose', async (event) => {
     const state = stateForSender(event.sender)
@@ -633,6 +665,34 @@ function registerIpc(): void {
     } finally {
       exportWindow.close()
     }
+  })
+
+  ipcMain.handle('file:export-docx', async (event, sourcePath: string, html: string) => {
+    const state = stateForSender(event.sender)
+    if (!state || state.window.isDestroyed()) return false
+    const suggestedPath = path.join(path.dirname(sourcePath), `${path.basename(sourcePath, path.extname(sourcePath))}.docx`)
+    const result = await dialog.showSaveDialog(state.window, {
+      defaultPath: suggestedPath,
+      filters: [{ name: 'Word 文档', extensions: ['docx'] }],
+    })
+    if (result.canceled || !result.filePath) return false
+
+    const htmlWithImages = await inlineLocalImageSources(html)
+    const document = await HTMLtoDOCX(htmlWithImages, null, {
+      title: path.basename(sourcePath, path.extname(sourcePath)),
+      creator: '墨笺',
+      lang: 'zh-CN',
+      pageSize: { width: 11906, height: 16838 },
+      margins: { top: 1134, right: 1134, bottom: 1134, left: 1134 },
+      imageProcessing: { svgHandling: 'native', suppressSharpWarning: true },
+    })
+    const bytes = Buffer.isBuffer(document)
+      ? document
+      : document instanceof ArrayBuffer
+        ? Buffer.from(document)
+        : Buffer.from(await document.arrayBuffer())
+    await writeFile(result.filePath, bytes)
+    return true
   })
 
   ipcMain.handle('file:print', async (event) => {

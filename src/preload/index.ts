@@ -23,6 +23,7 @@ const desktopBridge: DesktopBridge = {
   copyAsset: (sourcePath, root) => ipcRenderer.invoke('asset:copy', sourcePath, root) as Promise<string>,
   exportHtml: (path, html) => ipcRenderer.invoke('file:export-html', path, html) as Promise<boolean>,
   exportPdf: (path, html) => ipcRenderer.invoke('file:export-pdf', path, html) as Promise<boolean>,
+  exportDocx: (path, html) => ipcRenderer.invoke('file:export-docx', path, html) as Promise<boolean>,
   print: () => ipcRenderer.invoke('file:print') as Promise<boolean>,
   writeRecovery: (snapshot) => ipcRenderer.invoke('recovery:write', snapshot) as Promise<void>,
   readRecovery: (path) => ipcRenderer.invoke('recovery:read', path) as Promise<RecoverySnapshot | null>,

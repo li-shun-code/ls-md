@@ -160,6 +160,7 @@ export type MenuCommand =
   | 'file.saveAs'
   | 'file.exportHtml'
   | 'file.exportPdf'
+  | 'file.exportDocx'
   | 'file.print'
   | 'edit.undo'
   | 'edit.redo'
@@ -224,6 +225,7 @@ export type DesktopBridge = {
   copyAsset: (sourcePath: string, workspaceRoot: string) => Promise<string>
   exportHtml: (path: string, html: string) => Promise<boolean>
   exportPdf: (path: string, html: string) => Promise<boolean>
+  exportDocx: (path: string, html: string) => Promise<boolean>
   print: () => Promise<boolean>
   writeRecovery: (snapshot: RecoverySnapshot) => Promise<void>
   readRecovery: (path: string) => Promise<RecoverySnapshot | null>

@@ -9,6 +9,7 @@ import { Outline } from '@renderer/components/Outline'
 import { SettingsModal, type SettingsTab } from './components/SettingsModal'
 import { CodeRunnerDialog } from '@renderer/components/CodeRunnerDialog'
 import { VersionHistoryModal } from '@renderer/components/VersionHistoryModal'
+import { ContextMenu, type ContextMenuItem } from '@renderer/components/ContextMenu'
 import {
   buildExportHtml,
   countDocument,
@@ -30,6 +31,7 @@ type DocumentTab = {
   workspaceRoot: string
   mode: MarkdownMode
 }
+type TabContextMenu = { x: number; y: number; tabId: string }
 
 function normalizeDocumentPath(value: string): string {
   return value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
@@ -47,6 +49,7 @@ export function App() {
     mode: 'wysiwyg',
   }])
   const [activeTabId, setActiveTabId] = useState(initialTabId)
+  const [tabContextMenu, setTabContextMenu] = useState<TabContextMenu | null>(null)
   const documentWriteQueueRef = useRef<Promise<void>>(Promise.resolve())
   const enqueueDocumentWrite = useCallback(<T,>(write: () => Promise<T>) => {
     const next = documentWriteQueueRef.current.then(write, write)
@@ -441,40 +444,62 @@ export function App() {
     window.setTimeout(() => editorRef.current?.focus(), 0)
   }, [persistActiveTab, showNotice, workspaceRoot])
 
-  const closeDocumentTab = useCallback(async (tabId: string) => {
-    const tab = documentTabs.find((item) => item.id === tabId)
-    if (!tab) return
-    const content = tabId === activeTabId ? markdown : tab.markdown
-    const savedContent = tabId === activeTabId ? savedMarkdown : tab.savedMarkdown
-    if (content !== savedContent) {
-      if (tab.path) {
-        try {
+  const closeDocumentTabs = useCallback(async (tabIds: string[]) => {
+    const closingIds = new Set(tabIds)
+    const closingTabs = documentTabs.filter((tab) => closingIds.has(tab.id))
+    if (closingTabs.length === 0) return
+
+    const tabContent = (tab: DocumentTab) => ({
+      content: tab.id === activeTabId ? markdown : tab.markdown,
+      savedContent: tab.id === activeTabId ? savedMarkdown : tab.savedMarkdown,
+    })
+
+    try {
+      for (const tab of closingTabs) {
+        const { content, savedContent } = tabContent(tab)
+        if (tab.path && content !== savedContent) {
           await enqueueDocumentWrite(() => window.desktop.writeMarkdown(tab.path, content, 'auto'))
           await window.desktop.clearRecovery(tab.path)
-        } catch (error) {
-          showNotice(error instanceof Error ? error.message : '自动保存失败，无法关闭标签')
-          return
+          setDocumentTabs((current) => current.map((currentTab) => currentTab.id === tab.id
+            ? { ...currentTab, savedMarkdown: content }
+            : currentTab))
+          if (tab.id === activeTabId) setSavedMarkdown(content)
         }
-      } else if (!window.confirm('此未命名文档尚未保存，确定关闭并丢弃吗？')) {
-        return
       }
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '自动保存失败，无法关闭标签')
+      return
     }
 
-    const remaining = documentTabs.filter((item) => item.id !== tabId)
+    const unsavedUntitledCount = closingTabs.filter((tab) => {
+      const { content, savedContent } = tabContent(tab)
+      return !tab.path && content !== savedContent
+    }).length
+    if (unsavedUntitledCount > 0) {
+      const confirmation = unsavedUntitledCount === 1
+        ? '此未命名文档尚未保存，确定关闭并丢弃吗？'
+        : `有 ${unsavedUntitledCount} 个未命名文档尚未保存，确定关闭并丢弃吗？`
+      if (!window.confirm(confirmation)) return
+    }
+
+    const activeIndex = documentTabs.findIndex((tab) => tab.id === activeTabId)
+    const closesActiveTab = closingIds.has(activeTabId)
+    const remaining = documentTabs.filter((tab) => !closingIds.has(tab.id))
     if (remaining.length === 0) {
-      const welcomeTab: DocumentTab = {
+      remaining.push({
         id: crypto.randomUUID(),
         path: '',
         markdown: WELCOME_DOCUMENT_MARKDOWN,
         savedMarkdown: WELCOME_DOCUMENT_MARKDOWN,
         workspaceRoot: '',
         mode: 'wysiwyg',
-      }
-      remaining.push(welcomeTab)
+      })
     }
+
     setDocumentTabs(remaining)
-    if (tabId === activeTabId) {
-      const nextTab = remaining[Math.max(0, documentTabs.findIndex((item) => item.id === tabId) - 1)]
+    if (closesActiveTab) {
+      const nextIndex = Math.min(Math.max(activeIndex - 1, 0), remaining.length - 1)
+      const nextTab = remaining[nextIndex]
       setActiveTabId(nextTab.id)
       setActivePath(nextTab.path)
       setMarkdown(nextTab.markdown)
@@ -484,10 +509,37 @@ export function App() {
       setAutoSaveStatus(nextTab.path ? (nextTab.markdown === nextTab.savedMarkdown ? 'saved' : 'pending') : 'idle')
       setRecoveryBanner(null)
       setExternalChangeBanner(null)
+      setRunnerDialog(null)
       setCursor({ line: 1, column: 1 })
       if (nextTab.path) void window.desktop.openMarkdownPath(nextTab.path).catch((error) => showNotice(error instanceof Error ? error.message : '无法打开文档标签'))
     }
   }, [activeTabId, documentTabs, enqueueDocumentWrite, markdown, savedMarkdown, showNotice])
+
+  const closeDocumentTab = useCallback((tabId: string) => {
+    void closeDocumentTabs([tabId])
+  }, [closeDocumentTabs])
+
+  const tabContextMenuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!tabContextMenu) return []
+    const index = documentTabs.findIndex((tab) => tab.id === tabContextMenu.tabId)
+    if (index < 0) return []
+    return [
+      {
+        id: 'close-tabs-left',
+        label: '关闭左侧标签',
+        disabled: index === 0,
+        onClick: () => void closeDocumentTabs(documentTabs.slice(0, index).map((tab) => tab.id)),
+      },
+      {
+        id: 'close-tabs-right',
+        label: '关闭右侧标签',
+        disabled: index === documentTabs.length - 1,
+        onClick: () => void closeDocumentTabs(documentTabs.slice(index + 1).map((tab) => tab.id)),
+      },
+      { type: 'separator' },
+      { id: 'close-all-tabs', label: '关闭所有标签', onClick: () => void closeDocumentTabs(documentTabs.map((tab) => tab.id)) },
+    ]
+  }, [closeDocumentTabs, documentTabs, tabContextMenu])
 
   const saveDocument = useCallback(async () => {
     try {
@@ -570,15 +622,19 @@ export function App() {
     window.setTimeout(() => editorRef.current?.focus(), 0)
   }, [markdown, mode])
 
-  const exportDocument = useCallback(async (kind: 'html' | 'pdf') => {
+  const exportDocument = useCallback(async (kind: 'html' | 'pdf' | 'docx') => {
     try {
       editorRef.current?.loadMarkdown(markdown)
-      const body = await editorRef.current?.getHtmlForExport() ?? ''
+      const body = kind === 'docx'
+        ? await editorRef.current?.getHtmlForDocx() ?? ''
+        : await editorRef.current?.getHtmlForExport() ?? ''
       const html = buildExportHtml(documentTitle, body)
       const exported = kind === 'html'
         ? await window.desktop.exportHtml(activePath || '未命名.md', html)
-        : await window.desktop.exportPdf(activePath || '未命名.md', html)
-      if (exported) showNotice(`已导出为 ${kind.toUpperCase()}`)
+        : kind === 'pdf'
+          ? await window.desktop.exportPdf(activePath || '未命名.md', html)
+          : await window.desktop.exportDocx(activePath || '未命名.md', html)
+      if (exported) showNotice(kind === 'docx' ? '已导出为 Word 文档' : `已导出为 ${kind.toUpperCase()}`)
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '导出失败')
     }
@@ -725,6 +781,7 @@ export function App() {
       case 'file.saveAs': void saveAs(); break
       case 'file.exportHtml': void exportDocument('html'); break
       case 'file.exportPdf': void exportDocument('pdf'); break
+      case 'file.exportDocx': void exportDocument('docx'); break
       case 'file.print': void window.desktop.print(); break
       case 'edit.undo': document.execCommand('undo'); break
       case 'edit.redo': document.execCommand('redo'); break
@@ -1039,7 +1096,14 @@ export function App() {
                   : `未命名文档${unnamedIndex > 1 ? ` ${unnamedIndex}` : ''}`
               const tabDirty = tab.id === activeTabId ? dirty : tab.markdown !== tab.savedMarkdown
               return (
-                <div className={`document-tab${tab.id === activeTabId ? ' is-active' : ''}`} key={tab.id}>
+                <div
+                  className={`document-tab${tab.id === activeTabId ? ' is-active' : ''}`}
+                  key={tab.id}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    setTabContextMenu({ x: event.clientX, y: event.clientY, tabId: tab.id })
+                  }}
+                >
                   <button
                     type="button"
                     role="tab"
@@ -1067,6 +1131,15 @@ export function App() {
               <span aria-hidden="true">+</span>
             </button>
           </div>
+          {tabContextMenu && tabContextMenuItems.length > 0 && (
+            <ContextMenu
+              x={tabContextMenu.x}
+              y={tabContextMenu.y}
+              items={tabContextMenuItems}
+              ariaLabel="标签页操作"
+              onClose={() => setTabContextMenu(null)}
+            />
+          )}
           <div className="editor-scroll">
             <article className="editor-frame">
               <MarkdownEditor
