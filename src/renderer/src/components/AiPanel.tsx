@@ -34,6 +34,7 @@ type RequestState = {
   operation: AiOperation
   assistantId: string
   selection: AiSelection | null
+  original: string
   answer: string
 }
 
@@ -100,6 +101,7 @@ function diffText(original: string, replacement: string): { before: string; remo
 function operationLabel(operation: AiOperation): string {
   return {
     qa: '问答',
+    rewrite: '整篇改写',
     polish: '润色',
     expand: '扩写',
     shorten: '缩写',
@@ -108,6 +110,35 @@ function operationLabel(operation: AiOperation): string {
     continue: '继续写作',
     summarize: '总结',
   }[operation]
+}
+
+function isWholeDocumentRewriteRequest(prompt: string, hasSelection: boolean): boolean {
+  const rewriteAction = /(改写|重写|润色|rewrite|revise|polish)/i.test(prompt)
+  if (!rewriteAction || /(?:不要|不想|不需要|无需).{0,8}(?:改写|重写|润色|rewrite|revise|polish)/i.test(prompt)) return false
+  const wholeDocument = /(全文|整篇|全篇|整份(?:文档|文章|文件)|整个(?:文档|文章|文件)|当前文档|本篇(?:文档|文章)|这篇(?:文档|文章)|whole\s+document|entire\s+(?:document|file)|full\s+(?:document|file))/i.test(prompt)
+  const documentTarget = /(文档|文章|文件|document|file)/i.test(prompt)
+  const partialTarget = /(这段|这一段|该段|段落|章节|小节|部分|结论部分|摘要部分|section|paragraph|part of)/i.test(prompt)
+  if (partialTarget && !wholeDocument) return false
+  return wholeDocument || (!hasSelection && documentTarget)
+}
+
+function historyGroupLabel(timestamp: number, now = new Date()): string {
+  const date = new Date(timestamp)
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const sessionDay = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  const dayDifference = Math.floor((today - sessionDay) / 86_400_000)
+  if (dayDifference === 0) return '今天'
+  if (dayDifference === 1) return '昨天'
+  if (dayDifference < 7) return '最近 7 天'
+  return `${date.getFullYear()}年${date.getMonth() + 1}月`
+}
+
+function formatHistoryTime(timestamp: number, now = new Date()): string {
+  const date = new Date(timestamp)
+  const sameDay = date.toDateString() === now.toDateString()
+  return sameDay
+    ? date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
 export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initialAction, onClose, onSelectLine, onOpenSettings }: AiPanelProps) {
@@ -194,7 +225,7 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
       )))
       const result = request.answer
       if (request.operation !== 'qa' && request.operation !== 'summarize') {
-        setPendingEdit({ operation: request.operation, original: request.selection?.text ?? '', replacement: result })
+        setPendingEdit({ operation: request.operation, original: request.original, replacement: result })
       }
       setStatus('生成完成')
       setBusy(false)
@@ -221,10 +252,20 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
   const history = useMemo(() => sessions
     .filter((session) => session.documentKey === documentKey && session.messages.length > 0)
     .sort((left, right) => right.updatedAt - left.updatedAt), [documentKey, sessions])
+  const historyGroups = useMemo(() => {
+    const groups = new Map<string, AiSession[]>()
+    for (const session of history) {
+      const label = historyGroupLabel(session.updatedAt)
+      groups.set(label, [...(groups.get(label) ?? []), session])
+    }
+    return [...groups.entries()]
+  }, [history])
 
   const send = async (operation: AiOperation, customPrompt?: string) => {
     if (busy) return
     const prompt = (customPrompt ?? input).trim()
+    const currentSelection = editorRef.current?.getSelection() ?? null
+    const requestOperation = operation === 'qa' && isWholeDocumentRewriteRequest(prompt, Boolean(currentSelection)) ? 'rewrite' : operation
     let currentConfigured = hasConfiguration
     try {
       const latest = await window.desktop.getAiSettings()
@@ -239,10 +280,10 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
       setError('请先配置 Base URL、模型和 API Key')
       return
     }
-    if (operation === 'qa' && !prompt) return
+    if (requestOperation === 'qa' && !prompt) return
 
-    const selection = editorRef.current?.getSelection() ?? null
-    if (requiresSelection.has(operation) && !selection) {
+    const selection = requestOperation === 'rewrite' ? null : currentSelection
+    if (requiresSelection.has(requestOperation) && !selection) {
       setError('请先在文档中选择要处理的文本')
       setStatus('纠错等编辑操作需要先选择文本')
       return
@@ -251,10 +292,17 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
     const requestId = makeId('ai')
     const assistantId = makeId('assistant')
     const contextQuery = [prompt, selection?.text].filter(Boolean).join('\n')
-    const context = retrieveContext(markdown, contextQuery)
+    const context = requestOperation === 'rewrite' ? [] : retrieveContext(markdown, contextQuery)
     const history: AiMessage[] = messages.map(({ role, text }) => ({ role, content: text })).filter((message) => message.content)
-    const request: RequestState = { requestId, operation, assistantId, selection, answer: '' }
-    const userMessage: PanelMessage = { id: makeId('user'), role: 'user', text: prompt || `请${operationLabel(operation)}`, citations: [] }
+    const request: RequestState = {
+      requestId,
+      operation: requestOperation,
+      assistantId,
+      selection,
+      original: requestOperation === 'rewrite' ? markdown : selection?.text ?? '',
+      answer: '',
+    }
+    const userMessage: PanelMessage = { id: makeId('user'), role: 'user', text: prompt || `请${operationLabel(requestOperation)}`, citations: [] }
     const assistantMessage: PanelMessage = { id: assistantId, role: 'assistant', text: '', citations: [] }
     const nextSessionId = sessionId || makeId('session')
     const nextMessages = [...messages, userMessage, assistantMessage]
@@ -275,11 +323,12 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
     try {
       await window.desktop.startAiRequest({
         requestId,
-        operation,
-        prompt: prompt || `请${operationLabel(operation)}当前文档`,
+        operation: requestOperation,
+        prompt: prompt || `请${operationLabel(requestOperation)}当前文档`,
         documentTitle,
         history,
         context,
+        ...(requestOperation === 'rewrite' ? { documentContent: markdown } : {}),
         ...(selection ? { selection } : {}),
       })
       setStatus('正在生成…')
@@ -354,7 +403,8 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
 
   const applyEdit = () => {
     if (!pendingEdit) return
-    editorRef.current?.replaceSelection(pendingEdit.replacement)
+    if (pendingEdit.operation === 'rewrite') editorRef.current?.replaceDocument(pendingEdit.replacement)
+    else editorRef.current?.replaceSelection(pendingEdit.replacement)
     setPendingEdit(null)
     setStatus('修改已应用，可使用 Ctrl+Z 撤销')
   }
@@ -365,7 +415,6 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
         <div className="ai-panel-title">
           <Sparkles size={17} strokeWidth={1.8} aria-hidden="true" />
           <div>
-            <span className="eyebrow">AI ASSISTANT</span>
             <h2>文档助手</h2>
           </div>
         </div>
@@ -385,14 +434,24 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
       {historyOpen && (
         <section className="ai-history" aria-label="AI 历史会话">
           <div className="ai-history-heading">
-            <span>本篇文档的历史会话</span>
+            <span>最近对话</span>
             <button type="button" className="ai-text-button" onClick={startNewSession}><Plus size={13} strokeWidth={2} aria-hidden="true" />新建会话</button>
           </div>
-          {history.length > 0 ? history.map((session) => (
-            <button type="button" className={`ai-history-item${session.id === sessionId ? ' is-active' : ''}`} key={session.id} onClick={() => loadSession(session)}>
-              <span>{session.messages.find((message) => message.role === 'user')?.text || session.documentTitle}</span>
-              <small>{new Date(session.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>
-            </button>
+          {history.length > 0 ? historyGroups.map(([group, groupSessions]) => (
+            <div className="ai-history-group" key={group}>
+              <div className="ai-history-group-label">{group}</div>
+              {groupSessions.map((session) => {
+                const firstUserMessage = session.messages.find((message) => message.role === 'user')?.text
+                const lastMessage = session.messages[session.messages.length - 1]?.text
+                return (
+                  <button type="button" className={`ai-history-item${session.id === sessionId ? ' is-active' : ''}`} key={session.id} onClick={() => loadSession(session)}>
+                    <span className="ai-history-item-title">{firstUserMessage || session.documentTitle}</span>
+                    <small>{formatHistoryTime(session.updatedAt)}</small>
+                    <span className="ai-history-item-preview">{lastMessage || '新会话'}</span>
+                  </button>
+                )
+              })}
+            </div>
           )) : <p className="ai-history-empty">暂时没有历史会话</p>}
         </section>
       )}
@@ -412,7 +471,7 @@ export function AiPanel({ editorRef, markdown, documentKey, documentTitle, initi
         {messages.map((message) => (
           <div className={`ai-message ai-message-${message.role}`} key={message.id}>
             <div className="ai-message-heading">
-              <span className="ai-message-label">{message.role === 'user' ? '你' : 'AI 生成内容'}</span>
+              <span className="ai-message-label">{message.role === 'user' ? '你' : '墨笺助手'}</span>
               {message.role === 'assistant' && message.text && <button type="button" className="ai-copy-button" aria-label="复制 AI Markdown" title="复制原始 Markdown" onClick={() => void copyMessage(message)}>{copiedMessageId === message.id ? <Check size={12} strokeWidth={2} aria-hidden="true" /> : <Copy size={12} strokeWidth={1.8} aria-hidden="true" />}{copiedMessageId === message.id ? '已复制' : '复制 Markdown'}</button>}
             </div>
             {message.role === 'assistant' && message.text ? <AiMarkdown markdown={message.text} /> : <div className="ai-message-content">{message.text || (busy && message.role === 'assistant' ? '正在思考…' : '')}</div>}

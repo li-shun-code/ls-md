@@ -21,6 +21,19 @@ export type RecoverySnapshot = {
   createdAt: number
 }
 
+export type DocumentSaveReason = 'manual' | 'auto' | 'restore'
+
+export type DocumentVersionSummary = {
+  id: string
+  createdAt: number
+  reason: DocumentSaveReason
+  preview: string
+}
+
+export type DocumentVersion = DocumentVersionSummary & {
+  markdown: string
+}
+
 export type WorkspaceSelection = {
   root: string
   tree: FileNode[]
@@ -33,6 +46,7 @@ export type OpenedDocument = {
 
 export type AiOperation =
   | 'qa'
+  | 'rewrite'
   | 'polish'
   | 'expand'
   | 'shorten'
@@ -121,6 +135,7 @@ export type AiRequest = {
   documentTitle: string
   history: AiMessage[]
   context: AiContextChunk[]
+  documentContent?: string
   selection?: AiSelection
 }
 
@@ -194,7 +209,9 @@ export type DesktopBridge = {
   openMarkdownPath: (path: string) => Promise<void>
   listWorkspace: (root: string) => Promise<FileNode[]>
   readMarkdown: (path: string) => Promise<string>
-  writeMarkdown: (path: string, content: string) => Promise<void>
+  writeMarkdown: (path: string, content: string, reason?: DocumentSaveReason) => Promise<void>
+  listDocumentVersions: (path: string) => Promise<DocumentVersionSummary[]>
+  readDocumentVersion: (path: string, id: string) => Promise<DocumentVersion | null>
   saveMarkdownAs: (sourcePath: string, content: string) => Promise<OpenedDocument | null>
   copyAsset: (sourcePath: string, workspaceRoot: string) => Promise<string>
   exportHtml: (path: string, html: string) => Promise<boolean>
@@ -205,6 +222,9 @@ export type DesktopBridge = {
   clearRecovery: (path: string) => Promise<void>
   getAiSettings: () => Promise<AiSettings>
   saveAiSettings: (settings: AiSettingsInput) => Promise<AiSettings>
+  getWritingMemory: () => Promise<string>
+  saveWritingMemory: (memory: string) => Promise<void>
+  learnWritingMemory: (sample: string) => Promise<string>
   startAiRequest: (request: AiRequest) => Promise<string>
   cancelAiRequest: (requestId: string) => Promise<void>
   resolvePath: (baseDir: string, targetPath: string) => Promise<string | null>

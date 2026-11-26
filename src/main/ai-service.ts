@@ -1,5 +1,5 @@
 import { safeStorage, type WebContents } from 'electron'
-import { readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type {
   AiMessage,
@@ -24,7 +24,8 @@ const defaultSettings: StoredAiSettings = {
 }
 
 const operationInstructions: Record<AiRequest['operation'], string> = {
-  qa: '回答用户关于当前 Markdown 文档的问题。只能依据提供的文档片段，引用依据时使用 [来源:doc-chunk-N]。',
+  qa: '回答用户的问题。结合最近的会话历史理解追问；只有用户询问当前 Markdown 文档中的事实时，才依据文档片段并使用 [来源:doc-chunk-N] 引用。',
+  rewrite: '按用户要求改写当前完整 Markdown 文档，保留原意、事实、标题层级、链接和 Markdown 结构，只输出完整的改写后文档。',
   polish: '润色选中的 Markdown 内容，保持原意和 Markdown 结构，只输出改写后的内容。',
   expand: '扩写选中的 Markdown 内容，保持原有语气和 Markdown 结构，只输出改写后的内容。',
   shorten: '缩写选中的 Markdown 内容，保留关键信息和 Markdown 结构，只输出改写后的内容。',
@@ -36,10 +37,12 @@ const operationInstructions: Record<AiRequest['operation'], string> = {
 
 export class AiService {
   private readonly settingsPath: string
+  private readonly writingMemoryPath: string
   private readonly requests = new Map<string, AbortController>()
 
   constructor(userDataPath: string) {
     this.settingsPath = path.join(userDataPath, 'ai-settings.json')
+    this.writingMemoryPath = path.join(userDataPath, 'writing-memory.md')
   }
 
   async getSettings(): Promise<AiSettings> {
@@ -74,6 +77,65 @@ export class AiService {
       model: next.model,
       apiKeyConfigured: Boolean(next.encryptedApiKey),
     }
+  }
+
+  async getWritingMemory(): Promise<string> {
+    try {
+      return await readFile(this.writingMemoryPath, 'utf8')
+    } catch {
+      return ''
+    }
+  }
+
+  async saveWritingMemory(memory: string): Promise<void> {
+    const directory = path.dirname(this.writingMemoryPath)
+    await mkdir(directory, { recursive: true })
+    const temporaryPath = `${this.writingMemoryPath}.tmp`
+    await writeFile(temporaryPath, memory, 'utf8')
+    await rename(temporaryPath, this.writingMemoryPath)
+  }
+
+  async learnWritingMemory(sample: string): Promise<string> {
+    if (typeof sample !== 'string' || !sample.trim()) throw new Error('请先粘贴一段范文')
+
+    const settings = await this.readStoredSettings()
+    const apiKey = this.decryptApiKey(settings.encryptedApiKey)
+    if (!apiKey) throw new Error('请先配置 AI API Key')
+    if (!settings.model) throw new Error('请先配置 AI 模型名称')
+    const existingMemory = await this.getWritingMemory()
+
+    const response = await fetch(`${settings.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        stream: false,
+        messages: [
+          {
+            role: 'system',
+            content: '从用户提供的范文中提炼可复用的个人写作偏好，涵盖语气、句式、结构、用词和 Markdown 格式。如果已有偏好，合并并修订为一份一致、简洁的规则。只输出 Markdown 规则，不要复述样本文字、内容事实或个人信息。',
+          },
+          {
+            role: 'user',
+            content: `已有偏好：\n${existingMemory || '（无）'}\n\n本次范文：\n${sample.trim()}`,
+          },
+        ],
+      }),
+    })
+
+    if (!response.ok) throw new Error(this.getHttpError(response.status))
+    const payload = await response.json() as {
+      choices?: Array<{ message?: { content?: unknown } }>
+    }
+    const memory = payload.choices?.[0]?.message?.content
+    if (typeof memory !== 'string' || !memory.trim()) throw new Error('AI 没有返回可保存的写作偏好')
+
+    const normalizedMemory = memory.trim()
+    await this.saveWritingMemory(normalizedMemory)
+    return normalizedMemory
   }
 
   async start(request: AiRequest, sender: WebContents): Promise<string> {
@@ -116,6 +178,9 @@ export class AiService {
     }, 120_000)
 
     try {
+      const writingMemory = ['rewrite', 'polish', 'expand', 'shorten', 'translate', 'proofread', 'continue'].includes(request.operation)
+        ? await this.getWritingMemory()
+        : ''
       const response = await fetch(`${settings.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -126,7 +191,7 @@ export class AiService {
         body: JSON.stringify({
           model: settings.model,
           stream: true,
-          messages: this.buildMessages(request),
+          messages: this.buildMessages(request, writingMemory),
         }),
         signal: controller.signal,
       })
@@ -175,8 +240,8 @@ export class AiService {
     }
   }
 
-  private buildMessages(request: AiRequest): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
-    const history: AiMessage[] = request.history.slice(-8).map((message) => ({
+  private buildMessages(request: AiRequest, writingMemory: string): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+    const history: AiMessage[] = request.history.slice(-16).map((message) => ({
       role: message.role,
       content: message.content.slice(0, 4000),
     }))
@@ -184,10 +249,13 @@ export class AiService {
       `[${chunk.id}] ${chunk.heading}（第 ${chunk.startLine}-${chunk.endLine} 行）\n${chunk.text}`
     )).join('\n\n') || '（没有检索到相关文档片段）'
     const selection = request.selection?.text ? `\n选中的内容：\n${request.selection.text}` : ''
+    const documentContent = request.operation === 'rewrite'
+      ? `完整 Markdown 文档：\n${request.documentContent ?? ''}`
+      : `相关文档片段：\n${context}`
     const prompt = [
       `当前文档：${request.documentTitle || '未命名文档'}`,
       `操作：${operationInstructions[request.operation]}`,
-      `相关文档片段：\n${context}`,
+      documentContent,
       selection,
       `用户请求：${request.prompt}`,
     ].filter(Boolean).join('\n\n')
@@ -195,7 +263,12 @@ export class AiService {
     return [
       {
         role: 'system',
-        content: '你是墨笺内置 AI 助手。请明确说明这是 AI 生成内容。回答问题时不得编造文档中不存在的信息；信息不足时直接说明。编辑操作只输出结果，不要添加解释、前后引号或代码围栏。',
+        content: [
+          '你是墨笺内置 AI 助手。请明确说明这是 AI 生成内容。',
+          '用户追问之前的对话内容时，根据最近的会话历史回答；用户询问当前文档事实时，才受提供的文档片段限制，并在依据片段回答时引用 [来源:doc-chunk-N]。',
+          '编辑操作只输出结果，不要添加解释、前后引号或代码围栏。',
+          writingMemory ? `用户的个人写作偏好（仅用于写作和改写请求）：\n${writingMemory}` : '',
+        ].filter(Boolean).join('\n\n'),
       },
       ...history,
       { role: 'user', content: prompt },

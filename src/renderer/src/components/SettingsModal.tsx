@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle,
+  BookOpen,
   Check,
   CheckCircle2,
   Eye,
@@ -18,7 +19,7 @@ import {
 } from 'lucide-react'
 import type { AppSettings, ExecutionRequest, RunnerDefinition, UpdateState } from '@shared/types'
 
-export type SettingsTab = 'runners' | 'ai' | 'about'
+export type SettingsTab = 'runners' | 'ai' | 'writing' | 'about'
 
 const UPDATE_STATUS_TEXT: Record<UpdateState['status'], string> = {
   idle: '',
@@ -144,6 +145,10 @@ export function SettingsModal({
   const [aiTestResult, setAiTestResult] = useState<{ success: boolean; message: string } | null>(
     null
   )
+  const [writingMemory, setWritingMemory] = useState('')
+  const [writingSample, setWritingSample] = useState('')
+  const [isLearningWritingMemory, setIsLearningWritingMemory] = useState(false)
+  const [writingMemoryError, setWritingMemoryError] = useState('')
 
   // Save / General modal states
   const [isSaving, setIsSaving] = useState(false)
@@ -198,6 +203,10 @@ export function SettingsModal({
           window.desktop.getSettings(),
           window.desktop.getAiSettings().catch(() => null),
         ])
+        const savedWritingMemory = await window.desktop.getWritingMemory().catch(() => '')
+        setWritingMemory(savedWritingMemory)
+        setWritingSample('')
+        setWritingMemoryError('')
 
         if (settings?.runners) {
           setRunners(settings.runners)
@@ -488,6 +497,7 @@ export function SettingsModal({
           apiKeyConfigured: currentApiKeyConfigured,
         },
       })
+      await window.desktop.saveWritingMemory(writingMemory)
 
       setSaveStatus('设置已成功保存！')
       onSettingsSaved?.(updated)
@@ -499,6 +509,22 @@ export function SettingsModal({
       setSaveStatus(`保存失败: ${msg}`)
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  const handleLearnWritingMemory = async () => {
+    if (!writingSample.trim() || isLearningWritingMemory) return
+    setIsLearningWritingMemory(true)
+    setWritingMemoryError('')
+    try {
+      const learned = await window.desktop.learnWritingMemory(writingSample)
+      setWritingMemory(learned)
+      setWritingSample('')
+      setSaveStatus('已提炼偏好并保存到本机写作记忆')
+    } catch (err) {
+      setWritingMemoryError(err instanceof Error ? err.message : '提炼写作偏好失败')
+    } finally {
+      setIsLearningWritingMemory(false)
     }
   }
 
@@ -533,40 +559,51 @@ export function SettingsModal({
           </button>
         </div>
 
-        <div className="settings-modal-tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'runners'}
-            className={`settings-modal-tab${activeTab === 'runners' ? ' is-active' : ''}`}
-            onClick={() => setActiveTab('runners')}
-          >
-            <Terminal size={15} strokeWidth={2} aria-hidden="true" />
-            <span>代码执行器</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'ai'}
-            className={`settings-modal-tab${activeTab === 'ai' ? ' is-active' : ''}`}
-            onClick={() => setActiveTab('ai')}
-          >
-            <Sparkles size={15} strokeWidth={2} aria-hidden="true" />
-            <span>AI 助手模型</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'about'}
-            className={`settings-modal-tab${activeTab === 'about' ? ' is-active' : ''}`}
-            onClick={() => setActiveTab('about')}
-          >
-            <Info size={15} strokeWidth={2} aria-hidden="true" />
-            <span>关于与更新</span>
-          </button>
-        </div>
+        <div className="settings-modal-workspace">
+          <div className="settings-modal-tabs" role="tablist" aria-orientation="vertical">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'runners'}
+              className={`settings-modal-tab${activeTab === 'runners' ? ' is-active' : ''}`}
+              onClick={() => setActiveTab('runners')}
+            >
+              <Terminal size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span>代码执行器</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'ai'}
+              className={`settings-modal-tab${activeTab === 'ai' ? ' is-active' : ''}`}
+              onClick={() => setActiveTab('ai')}
+            >
+              <Sparkles size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span>AI 助手模型</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'writing'}
+              className={`settings-modal-tab${activeTab === 'writing' ? ' is-active' : ''}`}
+              onClick={() => setActiveTab('writing')}
+            >
+              <BookOpen size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span>写作偏好</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'about'}
+              className={`settings-modal-tab${activeTab === 'about' ? ' is-active' : ''}`}
+              onClick={() => setActiveTab('about')}
+            >
+              <Info size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span>关于与更新</span>
+            </button>
+          </div>
 
-        <div className="settings-modal-body">
+          <div className="settings-modal-body">
           {activeTab === 'runners' && (
             <div className="settings-runners-tab">
               <div className="settings-runners-toolbar">
@@ -898,6 +935,50 @@ export function SettingsModal({
             </div>
           )}
 
+          {activeTab === 'writing' && (
+            <div className="settings-writing-tab">
+              <div className="settings-writing-intro">
+                <h3>让 AI 熟悉你的写作方式</h3>
+                <p>粘贴一段有代表性的范文，AI 会提炼语气、句式和排版偏好，并自动保存到本机记忆文件。</p>
+                <p className="settings-writing-privacy">范文会发送给当前配置的 AI 模型进行分析；只保存提炼出的偏好，不保存范文原文。</p>
+              </div>
+              <label className="settings-writing-field" htmlFor="settings-writing-sample">
+                <span>范文</span>
+                <textarea
+                  id="settings-writing-sample"
+                  value={writingSample}
+                  onChange={(event) => setWritingSample(event.target.value)}
+                  placeholder="粘贴一段你满意的文章或文档片段…"
+                  rows={7}
+                />
+              </label>
+              {writingMemoryError && <div className="settings-form-error">{writingMemoryError}</div>}
+              <div className="settings-writing-actions">
+                <button
+                  type="button"
+                  className="settings-modal-btn is-primary"
+                  onClick={() => void handleLearnWritingMemory()}
+                  disabled={isLearningWritingMemory || !writingSample.trim()}
+                >
+                  {isLearningWritingMemory ? <Loader2 size={14} className="settings-spin" aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
+                  <span>{isLearningWritingMemory ? '正在分析范文…' : '提炼并保存偏好'}</span>
+                </button>
+                <span>提炼出的偏好会自动用于后续写作与改写请求。</span>
+              </div>
+              <label className="settings-writing-field" htmlFor="settings-writing-memory">
+                <span>已保存的写作偏好</span>
+                <textarea
+                  id="settings-writing-memory"
+                  value={writingMemory}
+                  onChange={(event) => setWritingMemory(event.target.value)}
+                  placeholder="提炼出的写作偏好会显示在这里，也可以手动调整。"
+                  rows={8}
+                />
+                <small>手动调整后，点击窗口底部的“保存设置”写入记忆文件。</small>
+              </label>
+            </div>
+          )}
+
           {activeTab === 'about' && (
             <div className="settings-about-tab">
               <p className="settings-section-desc">
@@ -973,6 +1054,7 @@ export function SettingsModal({
               )}
             </div>
           )}
+          </div>
         </div>
 
         <div className="settings-modal-footer">

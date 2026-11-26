@@ -21,11 +21,13 @@ import { RecoveryService } from './recovery-service'
 import { SettingsService } from './settings-service'
 import { RunnerService } from './runner-service'
 import { UpdateService } from './update-service'
+import { VersionService } from './version-service'
 import { initAppLogger } from './logger'
 import type {
   AiRequest,
   AiSettingsInput,
   AppSettings,
+  DocumentSaveReason,
   ExecutionRequest,
   OpenedDocument,
   RecoverySnapshot,
@@ -41,6 +43,7 @@ let aiService: AiService
 let settingsService: SettingsService
 let runnerService: RunnerService
 let updateService: UpdateService
+let versionService: VersionService
 
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-gpu')
@@ -245,22 +248,22 @@ async function chooseWorkspace(state: WindowState): Promise<string | null> {
 }
 
 /**
- * 打开 Markdown 文件（单进程多窗口语义）：
- * - 未指定目标窗口时：若某窗口已打开同一文件则聚焦复用；否则新建窗口承载该文件（多开）。
- * - 指定目标窗口时：在目标窗口内打开（菜单/对话框/文件树导航）。
+ * 打开 Markdown 文件（单窗口多标签语义）：未指定目标窗口时，在当前窗口打开；
+ * 指定目标窗口时，在目标窗口内打开（菜单/对话框/文件树导航）。
  */
 async function openMarkdownFile(filePath: string, targetState?: WindowState | null): Promise<void> {
   if (!isMarkdownPath(filePath)) return
   const resolvedPath = path.resolve(filePath)
 
   if (!targetState) {
-    const existing = [...windowStates.values()].find((candidate) => candidate.watchedFile === resolvedPath)
-    if (existing) {
-      if (existing.window.isMinimized()) existing.window.restore()
-      existing.window.focus()
+    const target = getFocusedState() ?? windowStates.values().next().value ?? null
+    if (!target) {
+      await createWindow(resolvedPath)
       return
     }
-    await createWindow(resolvedPath)
+    if (target.window.isMinimized()) target.window.restore()
+    target.window.focus()
+    await openMarkdownFile(resolvedPath, target)
     return
   }
 
@@ -525,13 +528,25 @@ function registerIpc(): void {
     return content
   })
 
-  ipcMain.handle('file:write', async (event, filePath: string, content: string) => {
+  ipcMain.handle('document-versions:list', async (event, filePath: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return versionService.list(path.resolve(filePath))
+  })
+
+  ipcMain.handle('document-versions:read', async (event, filePath: string, versionId: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return versionService.read(path.resolve(filePath), versionId)
+  })
+
+  ipcMain.handle('file:write', async (event, filePath: string, content: string, reason: DocumentSaveReason = 'manual') => {
     const state = stateForSender(event.sender)
     if (!state) throw new Error('未授权的请求')
     const resolvedPath = path.resolve(filePath)
     if (!state.workspaceRoot) {
       state.workspaceRoot = path.dirname(resolvedPath)
     }
+    const saveReason = reason === 'auto' || reason === 'restore' ? reason : 'manual'
+    await versionService.captureBeforeWrite(resolvedPath, content, saveReason)
     state.lastSelfWritePath = resolvedPath
     state.lastSelfWriteTime = Date.now()
     await writeMarkdown(state.workspaceRoot, resolvedPath, content)
@@ -553,6 +568,7 @@ function registerIpc(): void {
 
     const targetPath = path.resolve(isMarkdownPath(result.filePath) ? result.filePath : `${result.filePath}.md`)
     state.workspaceRoot = path.dirname(targetPath)
+    await versionService.captureBeforeWrite(targetPath, content, 'manual')
     state.lastSelfWritePath = targetPath
     state.lastSelfWriteTime = Date.now()
     await writeMarkdown(state.workspaceRoot, targetPath, content)
@@ -651,6 +667,21 @@ function registerIpc(): void {
   ipcMain.handle('ai:settings:save', async (event, settings: AiSettingsInput) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
     return aiService.saveSettings(settings)
+  })
+
+  ipcMain.handle('ai:writing-memory:get', async (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return aiService.getWritingMemory()
+  })
+
+  ipcMain.handle('ai:writing-memory:save', async (event, memory: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    await aiService.saveWritingMemory(memory)
+  })
+
+  ipcMain.handle('ai:writing-memory:learn', async (event, sample: string) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    return aiService.learnWritingMemory(sample)
   })
 
   ipcMain.handle('ai:request:start', async (event, request: AiRequest) => {
@@ -754,6 +785,7 @@ app.whenReady().then(async () => {
       logDirectory: appLogger.getLogDirectory(),
     })
     recoveryService = new RecoveryService(app.getPath('userData'))
+    versionService = new VersionService(app.getPath('userData'))
     recentService = new RecentService(app.getPath('userData'), 20)
     aiService = new AiService(app.getPath('userData'))
     settingsService = new SettingsService(app.getPath('userData'))
@@ -788,7 +820,7 @@ app.whenReady().then(async () => {
 })
 
 if (isPrimaryInstance) {
-  // 单实例 + 多窗口：第二个实例（如「用墨笺打开」另一文件）退出，由主进程为其新建窗口
+  // 单实例：第二个实例（如「用墨笺打开」另一文件）退出，由当前窗口打开新的文档标签
   app.on('second-instance', (_event, commandLine) => {
     const filePath = findMarkdownArgument(commandLine)
     if (!filePath) {

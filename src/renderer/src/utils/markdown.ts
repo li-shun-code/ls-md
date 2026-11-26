@@ -93,6 +93,8 @@ export function buildExportHtml(title: string, body: string): string {
       img { max-width: 100%; height: auto; }
       table { width: 100%; border-collapse: collapse; }
       th, td { padding: 0.5em 0.75em; border: 1px solid #dfe3e8; text-align: left; }
+      .mermaid-export { margin: 1.5em 0; overflow: visible; text-align: center; }
+      .mermaid-export svg { display: block; width: 100%; max-width: 100%; height: auto; margin: 0 auto; }
     </style>
   </head>
   <body>${body}</body>

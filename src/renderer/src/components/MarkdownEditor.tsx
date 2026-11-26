@@ -91,6 +91,7 @@ export type EditorCommands = {
   focus: () => void
   loadMarkdown: (markdown: string) => void
   getHtml: () => string
+  getHtmlForExport: () => Promise<string>
   toggleBold: () => void
   toggleItalic: () => void
   toggleStrike: () => void
@@ -108,6 +109,7 @@ export type EditorCommands = {
   insertImage: (source: string, alt: string) => void
   getSelection: () => AiSelection | null
   replaceSelection: (markdown: string) => void
+  replaceDocument: (markdown: string) => void
   selectLine: (line: number) => void
   selectHeading: (headingIndex: number, sourceLine: number) => void
 }
@@ -987,6 +989,23 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
       editor?.commands.setContent(markdownForEditor(nextMarkdown, workspaceRoot), { emitUpdate: false, contentType: 'markdown' })
     },
     getHtml: () => editor?.getHTML() ?? '',
+    getHtmlForExport: async () => {
+      const container = document.createElement('div')
+      container.innerHTML = editor?.getHTML() ?? ''
+      const mermaidBlocks = Array.from(container.querySelectorAll('pre > code.language-mermaid'))
+      for (const code of mermaidBlocks) {
+        try {
+          const { svg } = await mermaid.render(`mermaid-export-${++mermaidDiagramId}`, code.textContent ?? '')
+          const diagram = document.createElement('div')
+          diagram.className = 'mermaid-export'
+          diagram.innerHTML = svg
+          code.closest('pre')?.replaceWith(diagram)
+        } catch {
+          // Keep the source block in the export when a diagram cannot be rendered.
+        }
+      }
+      return container.innerHTML
+    },
     toggleBold: () => editor?.chain().focus().toggleBold().run(),
     toggleItalic: () => editor?.chain().focus().toggleItalic().run(),
     toggleStrike: () => editor?.chain().focus().toggleStrike().run(),
@@ -1043,6 +1062,16 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
         return
       }
       editor?.chain().focus().deleteSelection().insertContent(replacement, { contentType: 'markdown' }).run()
+    },
+    replaceDocument: (replacement) => {
+      if (mode === 'source') {
+        const source = sourceRef.current
+        if (!source) return
+        onSourceChangeRef.current(replacement)
+        window.requestAnimationFrame(() => source.focus())
+        return
+      }
+      editor?.chain().focus().selectAll().insertContent(replacement, { contentType: 'markdown' }).run()
     },
     selectLine: (line) => {
       if (mode === 'source') {

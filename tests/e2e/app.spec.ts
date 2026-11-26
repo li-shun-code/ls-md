@@ -40,10 +40,11 @@ test('jumps to the selected outline heading and enhances code blocks', async () 
     await app.evaluate(({ BrowserWindow }, document) => {
       BrowserWindow.getAllWindows()[0]?.webContents.send('document-opened', document)
     }, {
-      path: path.join(process.cwd(), 'outline-e2e.md'),
+      path: path.join(userDataPath, 'outline-e2e.md'),
       content: '# 第一节\n\n第一段内容。\n\n```python\nprint("hello")\nreturn 1\n```\n\n```mermaid\ngraph TD\n  A[开始] --> B[结束]\n```\n\n![示例图片](data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=)\n\n第二段内容。\n\n## 第二节\n\n第二节内容。\n\n第三段内容。\n\n第四段内容。',
     })
 
+    await page.locator('.outline-list > [role="treeitem"]').first().getByRole('button', { name: '展开' }).click()
     await expect(page.getByRole('treeitem', { name: '第二节' })).toBeVisible()
     await expect(page.locator('.code-line-numbers span')).toHaveCount(2)
     await expect(page.locator('.code-line-numbers span').nth(0)).toHaveText('1')
@@ -68,10 +69,10 @@ test('jumps to the selected outline heading and enhances code blocks', async () 
     await expect(page.locator('.preview-diagram-svg')).toBeVisible()
     await page.getByRole('button', { name: '重置预览缩放' }).click()
     await expect(previewStage).toHaveAttribute('data-preview-zoom', '1')
-    await page.getByRole('button', { name: '关闭' }).click()
+    await page.getByRole('button', { name: '关闭', exact: true }).click()
     await page.locator('.tiptap-editor img').click()
     await expect(page.getByRole('dialog', { name: '示例图片' })).toBeVisible()
-    await page.getByRole('button', { name: '关闭' }).click()
+    await page.getByRole('button', { name: '关闭', exact: true }).click()
     await page.getByRole('button', { name: '复制代码' }).click()
     await expect(page.getByRole('button', { name: '复制代码' })).toHaveText('已复制')
 
@@ -97,7 +98,7 @@ test('supports Typora-style shortcuts and table context actions', async () => {
     await app.evaluate(({ BrowserWindow }, document) => {
       BrowserWindow.getAllWindows()[0]?.webContents.send('document-opened', document)
     }, {
-      path: path.join(process.cwd(), 'editor-actions-e2e.md'),
+      path: path.join(userDataPath, 'editor-actions-e2e.md'),
       content: '准备使用快捷键\n\n| 模块 | 状态 |\n| --- | --- |\n| 编辑器 | 正常 |',
     })
 

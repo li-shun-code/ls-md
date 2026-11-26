@@ -1,5 +1,5 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type WheelEvent } from 'react'
-import { AlertTriangle, ChevronLeft, Code2, FolderOpen, PanelLeft, Search, Settings, Sparkles } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, Code2, FolderOpen, History, PanelLeft, Search, Settings, Sparkles, X } from 'lucide-react'
 import type { AiOperation, FileNode, MenuCommand, MarkdownMode, OpenedDocument, RecoverySnapshot, UpdateState, WorkspaceSelection } from '@shared/types'
 import { FileTree } from '@renderer/components/FileTree'
 import { IconButton } from '@renderer/components/IconButton'
@@ -8,6 +8,7 @@ import { AiPanel } from '@renderer/components/AiPanel'
 import { Outline } from '@renderer/components/Outline'
 import { SettingsModal, type SettingsTab } from './components/SettingsModal'
 import { CodeRunnerDialog } from '@renderer/components/CodeRunnerDialog'
+import { VersionHistoryModal } from '@renderer/components/VersionHistoryModal'
 import {
   buildExportHtml,
   countDocument,
@@ -21,9 +22,37 @@ import './styles.css'
 
 type SidebarTab = 'files' | 'outline'
 type Theme = 'light' | 'dark'
+type DocumentTab = {
+  id: string
+  path: string
+  markdown: string
+  savedMarkdown: string
+  workspaceRoot: string
+  mode: MarkdownMode
+}
+
+function normalizeDocumentPath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
 
 export function App() {
   const editorRef = useRef<EditorCommands>(null)
+  const [initialTabId] = useState(() => crypto.randomUUID())
+  const [documentTabs, setDocumentTabs] = useState<DocumentTab[]>(() => [{
+    id: initialTabId,
+    path: '',
+    markdown: WELCOME_DOCUMENT_MARKDOWN,
+    savedMarkdown: WELCOME_DOCUMENT_MARKDOWN,
+    workspaceRoot: '',
+    mode: 'wysiwyg',
+  }])
+  const [activeTabId, setActiveTabId] = useState(initialTabId)
+  const documentWriteQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const enqueueDocumentWrite = useCallback(<T,>(write: () => Promise<T>) => {
+    const next = documentWriteQueueRef.current.then(write, write)
+    documentWriteQueueRef.current = next.then(() => undefined, () => undefined)
+    return next
+  }, [])
   const [workspaceRoot, setWorkspaceRoot] = useState('')
   const [fileTree, setFileTree] = useState<FileNode[]>([])
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
@@ -47,6 +76,8 @@ export function App() {
   const [aiAction, setAiAction] = useState<{ operation: AiOperation; prompt?: string; timestamp: number } | null>(null)
   const [recoveryBanner, setRecoveryBanner] = useState<{ path: string; snapshot: RecoverySnapshot } | null>(null)
   const [externalChangeBanner, setExternalChangeBanner] = useState<{ path: string; newContent: string } | null>(null)
+  const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle')
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('runners')
   const [runnerDialog, setRunnerDialog] = useState<{ language: string; code: string; workingDirectory?: string } | null>(null)
@@ -62,6 +93,8 @@ export function App() {
   const autoOpenedRef = useRef(false)
   const activePathRef = useRef(activePath)
   activePathRef.current = activePath
+  const markdownRef = useRef(markdown)
+  markdownRef.current = markdown
 
   const rememberRecent = useCallback((filePath: string) => {
     try { localStorage.setItem('markdown-desk-last-file', filePath) } catch { /* ignore */ }
@@ -71,6 +104,24 @@ export function App() {
     setNotice(message)
     window.setTimeout(() => setNotice((current) => (current === message ? '' : current)), 2800)
   }, [])
+
+  useEffect(() => {
+    setDocumentTabs((current) => {
+      const index = current.findIndex((tab) => tab.id === activeTabId)
+      if (index < 0) return current
+      const currentTab = current[index]
+      if (
+        currentTab.path === activePath &&
+        currentTab.markdown === markdown &&
+        currentTab.savedMarkdown === savedMarkdown &&
+        currentTab.workspaceRoot === workspaceRoot &&
+        currentTab.mode === mode
+      ) return current
+      const next = [...current]
+      next[index] = { ...currentTab, path: activePath, markdown, savedMarkdown, workspaceRoot, mode }
+      return next
+    })
+  }, [activePath, activeTabId, markdown, mode, savedMarkdown, workspaceRoot])
 
   const handleOpenSettings = useCallback((tab: SettingsTab = 'runners') => {
     setSettingsTab(tab)
@@ -191,42 +242,110 @@ export function App() {
     setFileTree(nextTree)
   }, [])
 
-  const openDocument = useCallback(async (filePath: string, contentOverride?: string) => {
-    if (dirty && !window.confirm('当前文档有未保存的修改，确定要切换文档吗？')) return
+  const persistActiveTab = useCallback(async () => {
+    if (!activePath || !dirty || externalChangeBanner) return
+    const currentContent = mode === 'wysiwyg' ? markdown : markdownFromEditor(markdown, workspaceRoot)
+    await enqueueDocumentWrite(() => window.desktop.writeMarkdown(activePath, currentContent, 'auto'))
+    setDocumentTabs((current) => current.map((tab) => tab.path === activePath
+      ? { ...tab, markdown: currentContent, savedMarkdown: currentContent }
+      : tab))
+    if (activePathRef.current === activePath) {
+      setSavedMarkdown(currentContent)
+      setAutoSaveStatus('saved')
+    }
+    if (markdownRef.current === currentContent) await window.desktop.clearRecovery(activePath)
+  }, [activePath, dirty, enqueueDocumentWrite, externalChangeBanner, markdown, mode, workspaceRoot])
 
+  const activateDocumentTab = useCallback(async (tabId: string) => {
+    const tab = documentTabs.find((item) => item.id === tabId)
+    if (!tab || tabId === activeTabId) return
     try {
+      await persistActiveTab()
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '自动保存失败')
+    }
+    setActiveTabId(tab.id)
+    setActivePath(tab.path)
+    setMarkdown(tab.markdown)
+    setSavedMarkdown(tab.savedMarkdown)
+    setWorkspaceRoot(tab.workspaceRoot)
+    setMode(tab.mode)
+    setAutoSaveStatus(tab.path ? (tab.markdown === tab.savedMarkdown ? 'saved' : 'pending') : 'idle')
+    setRunnerDialog(null)
+    setRecoveryBanner(null)
+    setExternalChangeBanner(null)
+    setCursor({ line: 1, column: 1 })
+    if (tab.path) {
+      void window.desktop.openMarkdownPath(tab.path).catch((error) => {
+        showNotice(error instanceof Error ? error.message : '无法切换到此文档')
+      })
+    }
+  }, [activeTabId, documentTabs, persistActiveTab, showNotice])
+
+  const openDocument = useCallback(async (filePath: string, contentOverride?: string) => {
+    try {
+      const resolvedPath = filePath
+      const normalizedPath = normalizeDocumentPath(resolvedPath)
+      const existingTab = documentTabs.find((tab) => tab.path && normalizeDocumentPath(tab.path) === normalizedPath)
+      if (existingTab) {
+        if (existingTab.id !== activeTabId) {
+          await activateDocumentTab(existingTab.id)
+        } else if (contentOverride !== undefined && existingTab.markdown === existingTab.savedMarkdown) {
+          setMarkdown(contentOverride)
+          setSavedMarkdown(contentOverride)
+          setAutoSaveStatus('saved')
+        } else if (contentOverride !== undefined && contentOverride !== existingTab.savedMarkdown) {
+          setExternalChangeBanner({ path: resolvedPath, newContent: contentOverride })
+        }
+        return
+      }
+
+      await persistActiveTab()
       setRunnerDialog(null)
-      void window.desktop.logToFile?.('info', '切换文档', { filePath }).catch(() => undefined)
-      const content = contentOverride ?? (await window.desktop.readMarkdown(filePath))
-      const snapshot = await window.desktop.readRecovery(filePath)
+      void window.desktop.logToFile?.('info', '打开文档标签', { filePath: resolvedPath }).catch(() => undefined)
+      const content = contentOverride ?? (await window.desktop.readMarkdown(resolvedPath))
+      const snapshot = await window.desktop.readRecovery(resolvedPath)
 
       // 规范化比对，避免因纯空格或换行符格式化引发误恢复
       const normalizeText = (text: string) => text.replace(/\r\n/g, '\n').trim()
       if (snapshot && normalizeText(snapshot.markdown) !== normalizeText(content)) {
-        setRecoveryBanner({ path: filePath, snapshot })
+        setRecoveryBanner({ path: resolvedPath, snapshot })
       } else {
         setRecoveryBanner(null)
         if (snapshot) {
-          void window.desktop.clearRecovery(filePath)
+          void window.desktop.clearRecovery(resolvedPath)
         }
       }
       setExternalChangeBanner(null)
 
-      setActivePath(filePath)
-      const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase()
       const normalizedRoot = workspaceRoot ? workspaceRoot.replace(/\\/g, '/').toLowerCase() : ''
-      if (!workspaceRoot || !normalizedPath.startsWith(normalizedRoot)) {
-        const nextRoot = filePath.replace(/[\\/][^\\/]+$/, '')
-        setWorkspaceRoot(nextRoot)
-        void refreshTree(nextRoot)
+      const nextRoot = !workspaceRoot || !normalizedPath.startsWith(normalizedRoot)
+        ? resolvedPath.replace(/[\\/][^\\/]+$/, '')
+        : workspaceRoot
+      const nextTab: DocumentTab = {
+        id: crypto.randomUUID(),
+        path: resolvedPath,
+        markdown: content,
+        savedMarkdown: content,
+        workspaceRoot: nextRoot,
+        mode: 'wysiwyg',
       }
+      const replaceWelcome = documentTabs.length === 1 &&
+        !documentTabs[0].path &&
+        documentTabs[0].markdown === WELCOME_DOCUMENT_MARKDOWN
+      setDocumentTabs((current) => replaceWelcome ? [nextTab] : [...current, nextTab])
+      setActiveTabId(nextTab.id)
+      setActivePath(resolvedPath)
+      setWorkspaceRoot(nextRoot)
+      if (nextRoot !== workspaceRoot) void refreshTree(nextRoot)
       setMarkdown(content)
       setSavedMarkdown(content)
       setMode('wysiwyg')
       setCursor({ line: 1, column: 1 })
-      rememberRecent(filePath)
+      setAutoSaveStatus('saved')
+      rememberRecent(resolvedPath)
       void window.desktop.logToFile?.('info', '切换文档完成', {
-        filePath,
+        filePath: resolvedPath,
         contentChars: content.length,
       }).catch(() => undefined)
     } catch (error) {
@@ -236,7 +355,7 @@ export function App() {
         message: error instanceof Error ? error.message : String(error),
       }).catch(() => undefined)
     }
-  }, [dirty, refreshTree, rememberRecent, showNotice, workspaceRoot])
+  }, [activateDocumentTab, activeTabId, documentTabs, persistActiveTab, refreshTree, rememberRecent, showNotice, workspaceRoot])
 
   const handleApplyRecovery = useCallback(async () => {
     if (!recoveryBanner) return
@@ -298,23 +417,83 @@ export function App() {
   }, [refreshTree, showNotice])
 
   const newDocument = useCallback(() => {
-    if (dirty && !window.confirm('当前文档有未保存的修改，确定要新建文档吗？')) return
-    setRecoveryBanner(null)
-    setExternalChangeBanner(null)
-    setRunnerDialog(null)
+    void persistActiveTab().catch((error) => showNotice(error instanceof Error ? error.message : '自动保存失败'))
+    const nextTab: DocumentTab = {
+      id: crypto.randomUUID(),
+      path: '',
+      markdown: '',
+      savedMarkdown: '',
+      workspaceRoot,
+      mode: 'wysiwyg',
+    }
+    setDocumentTabs((current) => [...current, nextTab])
+    setActiveTabId(nextTab.id)
     setActivePath('')
     setMarkdown('')
     setSavedMarkdown('')
+    setWorkspaceRoot(nextTab.workspaceRoot)
+    setAutoSaveStatus('idle')
+    setRecoveryBanner(null)
+    setExternalChangeBanner(null)
+    setRunnerDialog(null)
     setMode('wysiwyg')
     setCursor({ line: 1, column: 1 })
     window.setTimeout(() => editorRef.current?.focus(), 0)
-  }, [dirty])
+  }, [persistActiveTab, showNotice, workspaceRoot])
+
+  const closeDocumentTab = useCallback(async (tabId: string) => {
+    const tab = documentTabs.find((item) => item.id === tabId)
+    if (!tab) return
+    const content = tabId === activeTabId ? markdown : tab.markdown
+    const savedContent = tabId === activeTabId ? savedMarkdown : tab.savedMarkdown
+    if (content !== savedContent) {
+      if (tab.path) {
+        try {
+          await enqueueDocumentWrite(() => window.desktop.writeMarkdown(tab.path, content, 'auto'))
+          await window.desktop.clearRecovery(tab.path)
+        } catch (error) {
+          showNotice(error instanceof Error ? error.message : '自动保存失败，无法关闭标签')
+          return
+        }
+      } else if (!window.confirm('此未命名文档尚未保存，确定关闭并丢弃吗？')) {
+        return
+      }
+    }
+
+    const remaining = documentTabs.filter((item) => item.id !== tabId)
+    if (remaining.length === 0) {
+      const welcomeTab: DocumentTab = {
+        id: crypto.randomUUID(),
+        path: '',
+        markdown: WELCOME_DOCUMENT_MARKDOWN,
+        savedMarkdown: WELCOME_DOCUMENT_MARKDOWN,
+        workspaceRoot: '',
+        mode: 'wysiwyg',
+      }
+      remaining.push(welcomeTab)
+    }
+    setDocumentTabs(remaining)
+    if (tabId === activeTabId) {
+      const nextTab = remaining[Math.max(0, documentTabs.findIndex((item) => item.id === tabId) - 1)]
+      setActiveTabId(nextTab.id)
+      setActivePath(nextTab.path)
+      setMarkdown(nextTab.markdown)
+      setSavedMarkdown(nextTab.savedMarkdown)
+      setWorkspaceRoot(nextTab.workspaceRoot)
+      setMode(nextTab.mode)
+      setAutoSaveStatus(nextTab.path ? (nextTab.markdown === nextTab.savedMarkdown ? 'saved' : 'pending') : 'idle')
+      setRecoveryBanner(null)
+      setExternalChangeBanner(null)
+      setCursor({ line: 1, column: 1 })
+      if (nextTab.path) void window.desktop.openMarkdownPath(nextTab.path).catch((error) => showNotice(error instanceof Error ? error.message : '无法打开文档标签'))
+    }
+  }, [activeTabId, documentTabs, enqueueDocumentWrite, markdown, savedMarkdown, showNotice])
 
   const saveDocument = useCallback(async () => {
     try {
       const content = mode === 'wysiwyg' ? markdown : markdownFromEditor(markdown, workspaceRoot)
       if (!activePath) {
-        const saved = await window.desktop.saveMarkdownAs('未命名.md', content)
+        const saved = await enqueueDocumentWrite(() => window.desktop.saveMarkdownAs('未命名.md', content))
         if (!saved) return
         setRecoveryBanner(null)
         setExternalChangeBanner(null)
@@ -322,28 +501,30 @@ export function App() {
         setWorkspaceRoot(saved.path.replace(/[\\/][^\\/]+$/, ''))
         setMarkdown(saved.content)
         setSavedMarkdown(saved.content)
+        setAutoSaveStatus('saved')
         await window.desktop.clearRecovery(saved.path)
         showNotice('文档已保存')
         return
       }
 
-      await window.desktop.writeMarkdown(activePath, content)
+      await enqueueDocumentWrite(() => window.desktop.writeMarkdown(activePath, content, 'manual'))
       setRecoveryBanner(null)
       setExternalChangeBanner(null)
       setMarkdown(content)
       setSavedMarkdown(content)
+      setAutoSaveStatus('saved')
       await window.desktop.clearRecovery(activePath)
       if (workspaceRoot) await refreshTree(workspaceRoot)
       showNotice('文档已保存')
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '保存失败')
     }
-  }, [activePath, markdown, mode, refreshTree, showNotice, workspaceRoot])
+  }, [activePath, enqueueDocumentWrite, markdown, mode, refreshTree, showNotice, workspaceRoot])
 
   const saveAs = useCallback(async () => {
     try {
       const content = mode === 'wysiwyg' ? markdown : markdownFromEditor(markdown, workspaceRoot)
-      const saved = await window.desktop.saveMarkdownAs(activePath || '未命名.md', content)
+      const saved = await enqueueDocumentWrite(() => window.desktop.saveMarkdownAs(activePath || '未命名.md', content))
       if (!saved) return
       setRecoveryBanner(null)
       setExternalChangeBanner(null)
@@ -351,12 +532,33 @@ export function App() {
       setWorkspaceRoot(saved.path.replace(/[\\/][^\\/]+$/, ''))
       setMarkdown(saved.content)
       setSavedMarkdown(saved.content)
+      setAutoSaveStatus('saved')
       await window.desktop.clearRecovery(saved.path)
       showNotice('文档已另存为')
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '另存为失败')
     }
-  }, [activePath, markdown, mode, showNotice, workspaceRoot])
+  }, [activePath, enqueueDocumentWrite, markdown, mode, showNotice, workspaceRoot])
+
+  const handleRestoreVersion = useCallback(async (versionMarkdown: string) => {
+    if (!activePath) return
+    try {
+      const currentContent = mode === 'wysiwyg' ? markdown : markdownFromEditor(markdown, workspaceRoot)
+      await enqueueDocumentWrite(() => window.desktop.writeMarkdown(activePath, currentContent, 'restore'))
+      await enqueueDocumentWrite(() => window.desktop.writeMarkdown(activePath, versionMarkdown, 'restore'))
+      setMarkdown(versionMarkdown)
+      setSavedMarkdown(versionMarkdown)
+      setAutoSaveStatus('saved')
+      setRecoveryBanner(null)
+      setExternalChangeBanner(null)
+      await window.desktop.clearRecovery(activePath)
+      if (workspaceRoot) await refreshTree(workspaceRoot)
+      showNotice('已恢复所选版本')
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '恢复版本失败')
+      throw error
+    }
+  }, [activePath, enqueueDocumentWrite, markdown, mode, refreshTree, showNotice, workspaceRoot])
 
   const toggleMode = useCallback(() => {
     if (mode === 'source') {
@@ -371,7 +573,7 @@ export function App() {
   const exportDocument = useCallback(async (kind: 'html' | 'pdf') => {
     try {
       editorRef.current?.loadMarkdown(markdown)
-      const body = editorRef.current?.getHtml() ?? ''
+      const body = await editorRef.current?.getHtmlForExport() ?? ''
       const html = buildExportHtml(documentTitle, body)
       const exported = kind === 'html'
         ? await window.desktop.exportHtml(activePath || '未命名.md', html)
@@ -487,15 +689,32 @@ export function App() {
   }, [])
 
   const openWelcomeDocument = useCallback(() => {
-    if (dirty && !window.confirm('当前文档有未保存的修改，确定要载入功能指南吗？')) return
+    const existing = documentTabs.find((tab) => !tab.path && tab.markdown === WELCOME_DOCUMENT_MARKDOWN)
+    if (existing) {
+      void activateDocumentTab(existing.id)
+      showNotice('已载入《功能全景指南》')
+      return
+    }
+    void persistActiveTab().catch((error) => showNotice(error instanceof Error ? error.message : '自动保存失败'))
+    const tab: DocumentTab = {
+      id: crypto.randomUUID(),
+      path: '',
+      markdown: WELCOME_DOCUMENT_MARKDOWN,
+      savedMarkdown: WELCOME_DOCUMENT_MARKDOWN,
+      workspaceRoot,
+      mode: 'wysiwyg',
+    }
+    setDocumentTabs((current) => [...current, tab])
+    setActiveTabId(tab.id)
     setActivePath('')
     setMarkdown(WELCOME_DOCUMENT_MARKDOWN)
     setSavedMarkdown(WELCOME_DOCUMENT_MARKDOWN)
     setMode('wysiwyg')
+    setAutoSaveStatus('idle')
     setCursor({ line: 1, column: 1 })
     editorRef.current?.loadMarkdown(WELCOME_DOCUMENT_MARKDOWN)
     showNotice('已载入《功能全景指南》')
-  }, [dirty, showNotice])
+  }, [activateDocumentTab, documentTabs, persistActiveTab, showNotice, workspaceRoot])
 
   const handleMenuCommand = useCallback((command: MenuCommand) => {
     switch (command) {
@@ -601,6 +820,50 @@ export function App() {
   }, [activePath, dirty, markdown])
 
   useEffect(() => {
+    if (!activePath) {
+      setAutoSaveStatus('idle')
+      return
+    }
+    if (!dirty) {
+      setAutoSaveStatus('saved')
+      return
+    }
+    if (externalChangeBanner) {
+      setAutoSaveStatus('idle')
+      return
+    }
+
+    setAutoSaveStatus('pending')
+    const savePath = activePath
+    const content = mode === 'wysiwyg' ? markdown : markdownFromEditor(markdown, workspaceRoot)
+    const timer = window.setTimeout(() => {
+      setAutoSaveStatus('saving')
+      void enqueueDocumentWrite(() => window.desktop.writeMarkdown(savePath, content, 'auto'))
+        .then(async () => {
+          setDocumentTabs((current) => current.map((tab) => tab.path === savePath
+            ? { ...tab, savedMarkdown: content }
+            : tab))
+          if (activePathRef.current === savePath) {
+            setSavedMarkdown(content)
+            if (markdownRef.current === content) {
+              setRecoveryBanner(null)
+              await window.desktop.clearRecovery(savePath)
+            }
+            setAutoSaveStatus(markdownRef.current === content ? 'saved' : 'pending')
+          } else if (markdownRef.current === content) {
+            await window.desktop.clearRecovery(savePath)
+          }
+        })
+        .catch((error) => {
+          if (activePathRef.current !== savePath) return
+          setAutoSaveStatus('error')
+          showNotice(`自动保存失败：${error instanceof Error ? error.message : String(error)}`)
+        })
+    }, 1_000)
+    return () => window.clearTimeout(timer)
+  }, [activePath, dirty, enqueueDocumentWrite, externalChangeBanner, markdown, mode, showNotice, workspaceRoot])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       const key = event.key.toLowerCase()
@@ -683,16 +946,36 @@ export function App() {
                       onNotice={showNotice}
                       onOpenFile={(newPath) => void openDocument(newPath)}
                       onRenameFile={(oldPath, newPath) => {
-                        if (activePath === oldPath) {
-                          setActivePath(newPath)
-                        } else if (activePath.startsWith(oldPath + '/') || activePath.startsWith(oldPath + '\\')) {
-                          setActivePath(newPath + activePath.slice(oldPath.length))
+                        const remapPath = (value: string) => value === oldPath
+                          ? newPath
+                          : value.startsWith(oldPath + '/') || value.startsWith(oldPath + '\\')
+                            ? newPath + value.slice(oldPath.length)
+                            : value
+                        setDocumentTabs((current) => current.map((tab) => ({
+                          ...tab,
+                          path: tab.path ? remapPath(tab.path) : '',
+                          workspaceRoot: tab.workspaceRoot ? remapPath(tab.workspaceRoot) : '',
+                        })))
+                        const renamedActivePath = activePath ? remapPath(activePath) : ''
+                        if (renamedActivePath !== activePath) {
+                          setActivePath(renamedActivePath)
+                          if (renamedActivePath) void window.desktop.openMarkdownPath(renamedActivePath)
                         }
-                        if (workspaceRoot) void refreshTree(workspaceRoot)
+                        if (workspaceRoot) {
+                          const nextWorkspaceRoot = remapPath(workspaceRoot)
+                          setWorkspaceRoot(nextWorkspaceRoot)
+                          void refreshTree(nextWorkspaceRoot)
+                        }
                       }}
                       onDeleteFile={(deletedPath) => {
-                        if (activePath === deletedPath || activePath.startsWith(deletedPath + '/') || activePath.startsWith(deletedPath + '\\')) {
-                          newDocument()
+                        const isWithinDeletedPath = (value: string) => value === deletedPath || value.startsWith(deletedPath + '/') || value.startsWith(deletedPath + '\\')
+                        setDocumentTabs((current) => current.map((tab) => tab.path && isWithinDeletedPath(tab.path)
+                          ? { ...tab, path: '', savedMarkdown: '' }
+                          : tab))
+                        if (activePath && isWithinDeletedPath(activePath)) {
+                          setActivePath('')
+                          setSavedMarkdown('')
+                          setAutoSaveStatus('idle')
                         }
                         if (workspaceRoot) void refreshTree(workspaceRoot)
                       }}
@@ -746,6 +1029,44 @@ export function App() {
               </div>
             </div>
           )}
+          <div className="document-tabs" role="tablist" aria-label="打开的文档">
+            {documentTabs.map((tab, index) => {
+              const unnamedIndex = documentTabs.slice(0, index + 1).filter((item) => !item.path && item.markdown !== WELCOME_DOCUMENT_MARKDOWN).length
+              const title = tab.path
+                ? tab.path.split(/[\\/]/).pop() ?? tab.path
+                : tab.markdown === WELCOME_DOCUMENT_MARKDOWN
+                  ? '功能介绍'
+                  : `未命名文档${unnamedIndex > 1 ? ` ${unnamedIndex}` : ''}`
+              const tabDirty = tab.id === activeTabId ? dirty : tab.markdown !== tab.savedMarkdown
+              return (
+                <div className={`document-tab${tab.id === activeTabId ? ' is-active' : ''}`} key={tab.id}>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={tab.id === activeTabId}
+                    className="document-tab-select"
+                    title={tab.path || title}
+                    onClick={() => void activateDocumentTab(tab.id)}
+                  >
+                    {tabDirty && <span className="document-tab-dirty" aria-label="有未保存的更改" />}
+                    <span>{title}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="document-tab-close"
+                    aria-label={`关闭 ${title}`}
+                    title={`关闭 ${title}`}
+                    onClick={() => void closeDocumentTab(tab.id)}
+                  >
+                    <X size={13} strokeWidth={1.8} aria-hidden="true" />
+                  </button>
+                </div>
+              )
+            })}
+            <button type="button" className="document-tab-new" aria-label="新建标签页" title="新建文档标签" onClick={newDocument}>
+              <span aria-hidden="true">+</span>
+            </button>
+          </div>
           <div className="editor-scroll">
             <article className="editor-frame">
               <MarkdownEditor
@@ -771,6 +1092,7 @@ export function App() {
               <IconButton icon={sidebarOpen ? ChevronLeft : PanelLeft} label={sidebarOpen ? '隐藏侧栏' : '显示侧栏'} onClick={toggleSidebar} active={sidebarOpen} />
               <IconButton icon={Code2} label={mode === 'source' ? '切换到所见即所得' : '切换到源码'} onClick={toggleMode} active={mode === 'source'} />
               <IconButton icon={Sparkles} label={aiOpen ? '关闭 AI 面板' : '打开 AI 面板'} onClick={() => setAiOpen((current) => !current)} active={aiOpen} />
+              <IconButton icon={History} label="文档版本" onClick={() => setVersionHistoryOpen(true)} disabled={!activePath} />
               <IconButton icon={Settings} label="首选项与设置 (Ctrl+,)" onClick={() => handleOpenSettings('runners')} />
             </div>
             <span className="status-spacer" />
@@ -779,6 +1101,7 @@ export function App() {
               <span>{stats.words.toLocaleString()} 词</span>
               <span>第 {cursor.line} 行，第 {cursor.column} 列</span>
               <span>{mode === 'source' ? 'Markdown 源码' : '所见即所得'}</span>
+              {activePath && <span className={`autosave-status is-${autoSaveStatus}`} role="status">{autoSaveStatus === 'pending' ? '等待自动保存' : autoSaveStatus === 'saving' ? '正在保存…' : autoSaveStatus === 'error' ? '自动保存失败' : '已保存'}</span>}
               <span>UTF-8</span>
             </div>
           </footer>
@@ -788,7 +1111,7 @@ export function App() {
           <AiPanel
             editorRef={editorRef}
             markdown={markdown}
-            documentKey={activePath || 'untitled'}
+            documentKey={activePath || activeTabId}
             documentTitle={documentTitle}
             initialAction={aiAction}
             onClose={() => setAiOpen(false)}
@@ -992,6 +1315,13 @@ export function App() {
         initialTab={settingsTab}
         onClose={() => setSettingsOpen(false)}
         onSettingsSaved={() => showNotice('设置已保存并生效')}
+      />
+
+      <VersionHistoryModal
+        open={versionHistoryOpen}
+        documentPath={activePath}
+        onClose={() => setVersionHistoryOpen(false)}
+        onRestore={handleRestoreVersion}
       />
 
       {(updateState.status === 'available' ||

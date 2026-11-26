@@ -23,7 +23,7 @@ test('renders code blocks with language badges, runs code, and opens settings mo
     await app.evaluate(({ BrowserWindow }, document) => {
       BrowserWindow.getAllWindows()[0]?.webContents.send('document-opened', document)
     }, {
-      path: path.join(process.cwd(), 'runner-e2e.md'),
+      path: path.join(userDataPath, 'runner-e2e.md'),
       content: '# 代码运行与配置测试\n\n```javascript\nconsole.log("Hello from JavaScript runner")\n```\n\n```python\nprint("Hello from Python runner")\n```',
     })
 
