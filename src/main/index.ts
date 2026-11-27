@@ -10,6 +10,7 @@ import {
   createMarkdownFile,
   isMarkdownPath,
   listWorkspace,
+  searchWorkspace,
   readMarkdown,
   renameNode,
   resolveLinkedDocument,
@@ -461,6 +462,13 @@ function registerIpc(): void {
     return listWorkspace(state.workspaceRoot)
   })
 
+  ipcMain.handle('workspace:search', async (event, root: string, query: string, options: import('../shared/text-search').TextSearchOptions) => {
+    const state = stateForSender(event.sender)
+    if (!state) throw new Error('未授权的请求')
+    if (!state.workspaceRoot || path.resolve(root) !== state.workspaceRoot) throw new Error('工作区已更改，请重新搜索')
+    return searchWorkspace(state.workspaceRoot, query, options)
+  })
+
   ipcMain.handle('file:show-in-folder', async (event, filePath: string) => {
     if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
     shell.showItemInFolder(path.resolve(filePath))
@@ -549,6 +557,13 @@ function registerIpc(): void {
       return true
     }
     return false
+  })
+
+  ipcMain.handle('system:open-default-apps', async (event) => {
+    if (!isTrustedSender(event.sender)) throw new Error('未授权的请求')
+    if (process.platform !== 'win32') return false
+    await shell.openExternal('ms-settings:defaultapps')
+    return true
   })
 
   ipcMain.handle('file:read', async (event, filePath: string) => {

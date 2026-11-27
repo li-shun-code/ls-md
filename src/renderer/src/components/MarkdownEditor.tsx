@@ -1,5 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
+import type { Editor } from '@tiptap/core'
 import { Markdown } from '@tiptap/markdown'
 import StarterKit from '@tiptap/starter-kit'
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight'
@@ -44,6 +45,7 @@ import {
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import type { AiOperation, AiSelection, MarkdownMode } from '@shared/types'
 import { markdownForEditor, markdownFromEditor } from '@renderer/utils/markdown'
+import { findTextMatches, getSearchPatternError, replaceTextMatch, type TextSearchMatch, type TextSearchOptions } from '@shared/text-search'
 
 mermaid.initialize({
   startOnLoad: false,
@@ -115,6 +117,11 @@ export type EditorCommands = {
   replaceDocument: (markdown: string) => void
   selectLine: (line: number) => void
   selectHeading: (headingIndex: number, sourceLine: number) => void
+  countSearchMatches: (query: string, options: TextSearchOptions) => number
+  findText: (query: string, options: TextSearchOptions, backwards?: boolean) => { index: number; total: number } | null
+  getSearchPatternError: (query: string, options: TextSearchOptions) => string | null
+  replaceCurrentSearchMatch: (query: string, replacement: string, options: TextSearchOptions) => boolean
+  replaceAllSearchMatches: (query: string, replacement: string, options: TextSearchOptions) => number
 }
 
 export type EditorPreview =
@@ -129,6 +136,7 @@ type MarkdownEditorProps = {
   scrollPositionKey?: string | null
   enableInputRules: boolean
   enableTypewriter: boolean
+  focusMode?: boolean
   onMarkdownChange: (markdown: string) => void
   onSourceChange: (markdown: string) => void
   onCursorChange: (cursor: { line: number; column: number }) => void
@@ -145,6 +153,46 @@ function selectSourceLine(source: HTMLTextAreaElement, line: number) {
   const start = lines.slice(0, safeLine - 1).reduce((total, item) => total + item.length + 1, 0)
   source.focus()
   source.setSelectionRange(start, start + (lines[safeLine - 1]?.length ?? 0))
+}
+
+type EditorSearchMatch = TextSearchMatch & { from: number; to: number }
+
+function findEditorSearchMatches(editor: Editor, query: string, options: TextSearchOptions): EditorSearchMatch[] {
+  const matches: EditorSearchMatch[] = []
+  editor.state.doc.descendants((block, position) => {
+    if (!block.isTextblock) return true
+
+    let text = ''
+    const segments: Array<{ start: number; end: number; from: number }> = []
+    block.forEach((child, offset) => {
+      const from = position + 1 + offset
+      const value = child.isText
+        ? child.text ?? ''
+        : child.type.name === 'hardBreak'
+          ? '\n'
+          : child.isInline
+            ? '\uFFFC'
+            : ''
+      if (!value) return
+      const start = text.length
+      text += value
+      segments.push({ start, end: text.length, from })
+    })
+
+    for (const match of findTextMatches(text, query, options)) {
+      if (text.slice(match.start, match.end).includes('\uFFFC')) continue
+      const startSegment = segments.find((segment) => segment.start <= match.start && match.start < segment.end)
+      const endSegment = segments.find((segment) => segment.start < match.end && match.end <= segment.end)
+      if (!startSegment || !endSegment) continue
+      matches.push({
+        ...match,
+        from: startSegment.from + match.start - startSegment.start,
+        to: endSegment.from + match.end - endSegment.start,
+      })
+    }
+    return false
+  })
+  return matches.sort((left, right) => left.from - right.from)
 }
 
 async function copyText(text: string) {
@@ -424,7 +472,7 @@ function createMermaidNodeView(node: ProseMirrorNode, onOpenPreview?: (preview: 
 }
 
 const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(function MarkdownEditor(
-  { markdown, mode, workspaceRoot, scrollPositionKey, onMarkdownChange, onSourceChange, onCursorChange, onDropImage, onOpenPreview, onNavigateLink, onTriggerAiAction, onRunCode },
+  { markdown, mode, workspaceRoot, scrollPositionKey, enableTypewriter = false, focusMode = false, onMarkdownChange, onSourceChange, onCursorChange, onDropImage, onOpenPreview, onNavigateLink, onTriggerAiAction, onRunCode },
   ref,
 ) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
@@ -983,6 +1031,119 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
     return dom ? (dom.closest('.editor-scroll') as HTMLElement | null) : null
   }, [editor, mode])
 
+  const getCurrentSearchMatches = useCallback((query: string, options: TextSearchOptions): EditorSearchMatch[] => {
+    if (!query) return []
+    if (mode === 'source') {
+      return findTextMatches(sourceRef.current?.value ?? markdown, query, options)
+        .map((match) => ({ ...match, from: match.start, to: match.end }))
+    }
+    return editor ? findEditorSearchMatches(editor, query, options) : []
+  }, [editor, markdown, mode])
+
+  const selectSearchMatch = useCallback((matches: EditorSearchMatch[], backwards: boolean) => {
+    if (!matches.length) return null
+    const source = mode === 'source' ? sourceRef.current : null
+    const selectionFrom = source?.selectionStart ?? editor?.state.selection.from ?? 0
+    const selectionTo = source?.selectionEnd ?? editor?.state.selection.to ?? selectionFrom
+    const selectedIndex = matches.findIndex((match) => match.from === selectionFrom && match.to === selectionTo)
+    let index = -1
+
+    if (selectedIndex >= 0) {
+      index = (selectedIndex + (backwards ? -1 : 1) + matches.length) % matches.length
+    } else if (backwards) {
+      for (let candidate = matches.length - 1; candidate >= 0; candidate -= 1) {
+        if (matches[candidate].to <= selectionFrom) {
+          index = candidate
+          break
+        }
+      }
+      if (index < 0) index = matches.length - 1
+    } else {
+      index = matches.findIndex((match) => match.from >= selectionTo)
+      if (index < 0) index = 0
+    }
+
+    const match = matches[index]
+    if (source) {
+      source.focus()
+      source.setSelectionRange(match.from, match.to)
+    } else {
+      editor?.chain().setTextSelection({ from: match.from, to: match.to }).scrollIntoView().focus().run()
+    }
+    return { index: index + 1, total: matches.length, match }
+  }, [editor, mode])
+
+  useEffect(() => {
+    if (!enableTypewriter) return
+
+    if (mode === 'source') {
+      const source = sourceRef.current
+      if (!source) return
+      const centerLine = () => {
+        const lineNumber = source.value.slice(0, source.selectionStart).split('\n').length
+        const lineHeight = Number.parseFloat(getComputedStyle(source).lineHeight) || 24
+        const desiredTop = (lineNumber - 1) * lineHeight - (source.clientHeight - lineHeight) / 2
+        source.scrollTop = Math.max(0, desiredTop)
+      }
+      source.addEventListener('click', centerLine)
+      source.addEventListener('keyup', centerLine)
+      source.addEventListener('input', centerLine)
+      centerLine()
+      return () => {
+        source.removeEventListener('click', centerLine)
+        source.removeEventListener('keyup', centerLine)
+        source.removeEventListener('input', centerLine)
+      }
+    }
+
+    if (!editor) return
+    const centerSelection = () => {
+      try {
+        const position = editor.state.selection.head
+        const coordinates = editor.view.coordsAtPos(position)
+        const container = editor.view.dom.closest('.editor-scroll')
+        if (!(container instanceof HTMLElement)) return
+        const bounds = container.getBoundingClientRect()
+        const targetTop = container.scrollTop + coordinates.top - bounds.top - container.clientHeight / 2
+        container.scrollTo({ top: Math.max(0, targetTop), behavior: 'auto' })
+      } catch {
+        // Ignore selection positions that are not currently measurable.
+      }
+    }
+    editor.on('selectionUpdate', centerSelection)
+    editor.on('update', centerSelection)
+    centerSelection()
+    return () => {
+      editor.off('selectionUpdate', centerSelection)
+      editor.off('update', centerSelection)
+    }
+  }, [editor, enableTypewriter, mode])
+
+  useEffect(() => {
+    if (!editor) return
+    const root = editor.view.dom
+    const updateFocusedBlock = () => {
+      const blocks = Array.from(root.children)
+      blocks.forEach((block) => block.classList.remove('is-focus-current'))
+      if (!focusMode || mode !== 'wysiwyg') return
+      const resolved = editor.state.doc.resolve(editor.state.selection.from)
+      const depth = resolved.depth
+      const blockPosition = depth > 0 ? resolved.before(depth) : 0
+      const blockDom = editor.view.nodeDOM(blockPosition)
+      const element = blockDom instanceof HTMLElement ? blockDom : blockDom?.parentElement
+      const topLevelBlock = element?.closest('.tiptap-editor > *')
+      if (topLevelBlock instanceof HTMLElement) topLevelBlock.classList.add('is-focus-current')
+    }
+    updateFocusedBlock()
+    editor.on('selectionUpdate', updateFocusedBlock)
+    editor.on('update', updateFocusedBlock)
+    return () => {
+      editor.off('selectionUpdate', updateFocusedBlock)
+      editor.off('update', updateFocusedBlock)
+      Array.from(root.children).forEach((block) => block.classList.remove('is-focus-current'))
+    }
+  }, [editor, focusMode, mode])
+
   // 滚动位置持久化：当前文档滚动时（rAF 节流）记录到 localStorage，按文档路径独立保存
   useEffect(() => {
     if (!scrollPositionKey) return
@@ -1285,7 +1446,68 @@ const MarkdownEditorImpl = forwardRef<EditorCommands, MarkdownEditorProps>(funct
         })
       })
     },
-  }), [editor, getHtmlForDocx, getHtmlForExport, mode, workspaceRoot])
+    countSearchMatches: (query, options) => getCurrentSearchMatches(query, options).length,
+    findText: (query, options, backwards = false) => {
+      if (getSearchPatternError(query, options)) return null
+      const result = selectSearchMatch(getCurrentSearchMatches(query, options), backwards)
+      return result ? { index: result.index, total: result.total } : null
+    },
+    getSearchPatternError: (query, options) => getSearchPatternError(query, options),
+    replaceCurrentSearchMatch: (query, replacement, options) => {
+      if (!query || getSearchPatternError(query, options)) return false
+      const matches = getCurrentSearchMatches(query, options)
+      if (!matches.length) return false
+      const source = mode === 'source' ? sourceRef.current : null
+      const selectionFrom = source?.selectionStart ?? editor?.state.selection.from ?? 0
+      const selectionTo = source?.selectionEnd ?? editor?.state.selection.to ?? selectionFrom
+      const activeMatch = matches.find((match) => match.from === selectionFrom && match.to === selectionTo)
+        ?? selectSearchMatch(matches, false)?.match
+      if (!activeMatch) return false
+
+      const replacementText = replaceTextMatch(activeMatch, query, replacement, options)
+      if (source) {
+        onSourceChangeRef.current(`${source.value.slice(0, activeMatch.from)}${replacementText}${source.value.slice(activeMatch.to)}`)
+        window.requestAnimationFrame(() => {
+          source.focus()
+          source.setSelectionRange(activeMatch.from, activeMatch.from + replacementText.length)
+        })
+        return true
+      }
+      if (!editor) return false
+      const transaction = editor.state.tr.insertText(replacementText, activeMatch.from, activeMatch.to)
+      transaction.setSelection(TextSelection.create(transaction.doc, activeMatch.from, activeMatch.from + replacementText.length))
+      editor.view.dispatch(transaction)
+      editor.commands.focus()
+      return true
+    },
+    replaceAllSearchMatches: (query, replacement, options) => {
+      if (!query || getSearchPatternError(query, options)) return 0
+      const matches = getCurrentSearchMatches(query, options)
+      if (!matches.length) return 0
+      const source = mode === 'source' ? sourceRef.current : null
+      if (source) {
+        let nextMarkdown = source.value
+        for (const match of [...matches].reverse()) {
+          const replacementText = replaceTextMatch(match, query, replacement, options)
+          nextMarkdown = `${nextMarkdown.slice(0, match.from)}${replacementText}${nextMarkdown.slice(match.to)}`
+        }
+        onSourceChangeRef.current(nextMarkdown)
+        window.requestAnimationFrame(() => source.focus())
+        return matches.length
+      }
+      if (!editor) return 0
+
+      let transaction = editor.state.tr
+      for (const match of [...matches].reverse()) {
+        transaction = transaction.insertText(replaceTextMatch(match, query, replacement, options), match.from, match.to)
+      }
+      const firstReplacement = replaceTextMatch(matches[0], query, replacement, options)
+      transaction.setSelection(TextSelection.create(transaction.doc, matches[0].from, matches[0].from + firstReplacement.length))
+      editor.view.dispatch(transaction)
+      editor.commands.focus()
+      return matches.length
+    },
+  }), [editor, getCurrentSearchMatches, getHtmlForDocx, getHtmlForExport, mode, selectSearchMatch, workspaceRoot])
 
   if (mode === 'source') {
     const lineCount = Math.max(1, markdown.split(/\r?\n/).length)

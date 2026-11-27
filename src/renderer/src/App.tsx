@@ -1,9 +1,10 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type WheelEvent } from 'react'
 import { AlertTriangle, ChevronLeft, Code2, FolderOpen, History, PanelLeft, Search, Settings, Sparkles, X } from 'lucide-react'
-import type { AiOperation, FileNode, MenuCommand, MarkdownMode, OpenedDocument, RecoverySnapshot, UpdateState, WorkspaceSelection } from '@shared/types'
+import type { AiOperation, FileNode, MenuCommand, MarkdownMode, OpenedDocument, RecoverySnapshot, UpdateState, WorkspaceSearchResponse, WorkspaceSelection } from '@shared/types'
 import { FileTree } from '@renderer/components/FileTree'
 import { IconButton } from '@renderer/components/IconButton'
 import { MarkdownEditor, type EditorCommands, type EditorPreview } from '@renderer/components/MarkdownEditor'
+import { getSearchPatternError, type TextSearchOptions } from '@shared/text-search'
 import { AiPanel } from '@renderer/components/AiPanel'
 import { Outline } from '@renderer/components/Outline'
 import { SettingsModal, type SettingsTab } from './components/SettingsModal'
@@ -23,7 +24,7 @@ import { normalizeDocumentThemeId } from '@shared/document-theme-options'
 import { WELCOME_DOCUMENT_MARKDOWN } from '@renderer/utils/welcome-document'
 import './styles.css'
 
-type SidebarTab = 'files' | 'outline'
+type SidebarTab = 'files' | 'outline' | 'search'
 type Theme = 'light' | 'dark'
 type DocumentTab = {
   id: string
@@ -69,6 +70,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('markdown-desk-sidebar') !== 'closed')
   const [aiOpen, setAiOpen] = useState(() => localStorage.getItem('markdown-desk-ai-panel') === 'open')
   const [focusMode, setFocusMode] = useState(false)
+  const [typewriterMode, setTypewriterMode] = useState(() => localStorage.getItem('markdown-desk-typewriter') === 'on')
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('markdown-desk-theme') as Theme | null) ?? 'light')
   const [documentThemeId, setDocumentThemeId] = useState(() => normalizeDocumentThemeId(localStorage.getItem('markdown-desk-document-theme') ?? DEFAULT_DOCUMENT_THEME_ID))
   const [documentThemeCss, setDocumentThemeCss] = useState(() => {
@@ -78,7 +80,17 @@ export function App() {
   const [zoom, setZoom] = useState(1)
   const [cursor, setCursor] = useState({ line: 1, column: 1 })
   const [searchOpen, setSearchOpen] = useState(false)
+  const [replaceOpen, setReplaceOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [replacementQuery, setReplacementQuery] = useState('')
+  const [searchOptions, setSearchOptions] = useState<TextSearchOptions>({ caseSensitive: false, wholeWord: false, useRegex: false })
+  const [searchPosition, setSearchPosition] = useState<{ index: number; total: number } | null>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const workspaceSearchInputRef = useRef<HTMLInputElement>(null)
+  const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState('')
+  const [workspaceSearchResponse, setWorkspaceSearchResponse] = useState<WorkspaceSearchResponse>({ results: [], total: 0, truncated: false })
+  const [workspaceSearchLoading, setWorkspaceSearchLoading] = useState(false)
+  const [workspaceSearchError, setWorkspaceSearchError] = useState('')
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [preview, setPreview] = useState<EditorPreview | null>(null)
@@ -94,11 +106,55 @@ export function App() {
   const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' })
   const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false)
 
+  useEffect(() => {
+    setSearchPosition(null)
+  }, [activeTabId, markdown, searchOptions, searchQuery])
+
   const deferredMarkdown = useDeferredValue(markdown)
+  const deferredSearchQuery = useDeferredValue(searchQuery)
+  const deferredWorkspaceSearchQuery = useDeferredValue(workspaceSearchQuery)
   const outline = useMemo(() => extractOutline(deferredMarkdown), [deferredMarkdown])
   const stats = useMemo(() => countDocument(deferredMarkdown), [deferredMarkdown])
+  const searchMatchCount = searchOpen && deferredSearchQuery
+    ? editorRef.current?.countSearchMatches(deferredSearchQuery, searchOptions) ?? 0
+    : 0
+  const searchPatternError = searchOpen && searchQuery ? editorRef.current?.getSearchPatternError(searchQuery, searchOptions) ?? null : null
   const dirty = markdown !== savedMarkdown
   const documentTitle = activePath ? activePath.split(/[\\/]/).pop() ?? '未命名文档' : '未命名文档'
+
+  useEffect(() => {
+    if (sidebarTab !== 'search') return
+    const query = deferredWorkspaceSearchQuery.trim()
+    if (!workspaceRoot || !query) {
+      setWorkspaceSearchResponse({ results: [], total: 0, truncated: false })
+      setWorkspaceSearchLoading(false)
+      setWorkspaceSearchError('')
+      return
+    }
+
+    const patternError = getSearchPatternError(query, searchOptions)
+    if (patternError) {
+      setWorkspaceSearchResponse({ results: [], total: 0, truncated: false })
+      setWorkspaceSearchLoading(false)
+      setWorkspaceSearchError(patternError)
+      return
+    }
+
+    let cancelled = false
+    setWorkspaceSearchLoading(true)
+    setWorkspaceSearchError('')
+    const timer = window.setTimeout(() => {
+      window.desktop.searchWorkspace(workspaceRoot, query, searchOptions)
+        .then((response) => { if (!cancelled) setWorkspaceSearchResponse(response) })
+        .catch((error) => { if (!cancelled) setWorkspaceSearchError(error instanceof Error ? error.message : '工作区搜索失败') })
+        .finally(() => { if (!cancelled) setWorkspaceSearchLoading(false) })
+    }, 180)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [deferredWorkspaceSearchQuery, searchOptions, sidebarTab, workspaceRoot])
 
   const autoOpenedRef = useRef(false)
   const activePathRef = useRef(activePath)
@@ -178,6 +234,50 @@ export function App() {
   const changePreviewZoom = useCallback((delta: number) => {
     setPreviewZoom((current) => Math.round(Math.min(4, Math.max(0.3, current + delta)) * 100) / 100)
   }, [])
+
+  const openSearch = useCallback((showReplace: boolean) => {
+    setSearchOpen(true)
+    setReplaceOpen(showReplace)
+    setSearchPosition(null)
+  }, [])
+
+  const openWorkspaceSearch = useCallback(() => {
+    setSidebarTab('search')
+    setSidebarOpen(true)
+    window.requestAnimationFrame(() => workspaceSearchInputRef.current?.focus())
+  }, [])
+
+  const handleFind = useCallback((backwards = false) => {
+    if (!searchQuery) return
+    setSearchPosition(editorRef.current?.findText(searchQuery, searchOptions, backwards) ?? null)
+    window.requestAnimationFrame(() => searchInputRef.current?.focus())
+  }, [searchOptions, searchQuery])
+
+  const handleReplaceCurrent = useCallback(() => {
+    if (!searchQuery) return
+    const replaced = editorRef.current?.replaceCurrentSearchMatch(searchQuery, replacementQuery, searchOptions) ?? false
+    if (!replaced) {
+      showNotice(searchPatternError ? `查找表达式无效：${searchPatternError}` : '没有可替换的匹配项')
+      return
+    }
+    setSearchPosition(null)
+    window.requestAnimationFrame(() => {
+      setSearchPosition(editorRef.current?.findText(searchQuery, searchOptions) ?? null)
+      searchInputRef.current?.focus()
+    })
+  }, [replacementQuery, searchOptions, searchPatternError, searchQuery, showNotice])
+
+  const handleReplaceAll = useCallback(() => {
+    if (!searchQuery) return
+    if (searchPatternError) {
+      showNotice(`查找表达式无效：${searchPatternError}`)
+      return
+    }
+    const replacedCount = editorRef.current?.replaceAllSearchMatches(searchQuery, replacementQuery, searchOptions) ?? 0
+    setSearchPosition(null)
+    searchInputRef.current?.focus()
+    showNotice(replacedCount ? `已替换 ${replacedCount} 处` : '没有匹配项')
+  }, [replacementQuery, searchOptions, searchPatternError, searchQuery, showNotice])
 
   const handleDownload = useCallback(async (format: ExportFormat) => {
     if (!preview) return
@@ -800,6 +900,14 @@ export function App() {
       case 'edit.copy': document.execCommand('copy'); break
       case 'edit.paste': document.execCommand('paste'); break
       case 'edit.selectAll': document.execCommand('selectAll'); break
+      case 'edit.find': openSearch(false); break
+      case 'edit.replace': openSearch(true); break
+      case 'edit.searchWorkspace': openWorkspaceSearch(); break
+      case 'system.openDefaultApps':
+        void window.desktop.openDefaultAppsSettings()
+          .then((opened) => showNotice(opened ? '在 Windows 默认应用中搜索 .md 并选择 Mojian' : '当前平台不支持此设置入口'))
+          .catch((error) => showNotice(error instanceof Error ? error.message : '无法打开默认应用设置'))
+        break
       case 'format.bold': editorRef.current?.toggleBold(); break
       case 'format.italic': editorRef.current?.toggleItalic(); break
       case 'format.strike': editorRef.current?.toggleStrike(); break
@@ -818,6 +926,7 @@ export function App() {
       case 'view.toggleOutline': setSidebarTab('outline'); setSidebarOpen(true); break
       case 'view.toggleSource': toggleMode(); break
       case 'view.toggleFocus': setFocusMode((current) => !current); break
+      case 'view.toggleTypewriter': setTypewriterMode((current) => !current); break
       case 'view.zoomIn': setZoom((current) => Math.min(1.25, current + 0.05)); break
       case 'view.zoomOut': setZoom((current) => Math.max(0.8, current - 0.05)); break
       case 'view.resetZoom': setZoom(1); break
@@ -826,7 +935,7 @@ export function App() {
       case 'settings.open': handleOpenSettings('runners'); break
       case 'settings.openTheme': handleOpenSettings('theme'); break
     }
-  }, [exportDocument, handleOpenSettings, newDocument, openWelcomeDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
+  }, [exportDocument, handleOpenSettings, newDocument, openSearch, openWelcomeDocument, openWorkspace, openWorkspaceSearch, saveAs, saveDocument, showNotice, toggleMode, toggleSidebar])
 
   useEffect(() => {
     localStorage.setItem('markdown-desk-theme', theme)
@@ -858,6 +967,10 @@ export function App() {
   useEffect(() => {
     localStorage.setItem('markdown-desk-sidebar', sidebarOpen ? 'open' : 'closed')
   }, [sidebarOpen])
+
+  useEffect(() => {
+    localStorage.setItem('markdown-desk-typewriter', typewriterMode ? 'on' : 'off')
+  }, [typewriterMode])
 
   useEffect(() => {
     localStorage.setItem('markdown-desk-ai-panel', aiOpen ? 'open' : 'closed')
@@ -958,6 +1071,10 @@ export function App() {
       const key = event.key.toLowerCase()
       const isTextField = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement
 
+      if (event.key === 'F8') { event.preventDefault(); setFocusMode((current) => !current); return }
+      if (event.key === 'F9') { event.preventDefault(); setTypewriterMode((current) => !current); return }
+      if (event.key === 'F3' && searchQuery) { event.preventDefault(); handleFind(event.shiftKey); return }
+
       if (event.altKey && event.shiftKey && event.code === 'Digit5' && mode === 'wysiwyg' && !isTextField) {
         event.preventDefault()
         editorRef.current?.toggleStrike()
@@ -969,10 +1086,11 @@ export function App() {
       if (key === 's') { event.preventDefault(); void (event.shiftKey ? saveAs() : saveDocument()); return }
       if (key === 'n' && !event.shiftKey) { event.preventDefault(); newDocument(); return }
       if (key === 'o' && event.shiftKey) { event.preventDefault(); void openWorkspace(); return }
-      if (key === 'f' && !event.shiftKey) { event.preventDefault(); setSearchOpen(true); return }
+      if (key === 'f' && !event.shiftKey) { event.preventDefault(); openSearch(false); return }
+      if (key === 'h' && !event.shiftKey) { event.preventDefault(); openSearch(true); return }
+      if (key === 'f' && event.shiftKey) { event.preventDefault(); openWorkspaceSearch(); return }
       if (key === '/' && !event.shiftKey) { event.preventDefault(); toggleMode(); return }
       if (key === 'l' && event.shiftKey) { event.preventDefault(); toggleSidebar(); return }
-      if (key === 'f' && event.shiftKey) { event.preventDefault(); setFocusMode((current) => !current); return }
       if (key === 'p' && !event.shiftKey) { event.preventDefault(); void window.desktop.print(); return }
       if (key === ',' && !event.shiftKey) { event.preventDefault(); handleOpenSettings('runners'); return }
       if (key === '=' || key === '+') { event.preventDefault(); setZoom((current) => Math.min(1.25, current + 0.05)); return }
@@ -1004,7 +1122,7 @@ export function App() {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [handleOpenSettings, insertLink, mode, newDocument, openWorkspace, saveAs, saveDocument, toggleMode, toggleSidebar])
+  }, [handleFind, handleOpenSettings, insertLink, mode, newDocument, openSearch, openWorkspace, openWorkspaceSearch, saveAs, saveDocument, searchQuery, toggleMode, toggleSidebar])
 
   return (
     <div className={`app-shell theme-${theme}${focusMode ? ' is-focus-mode' : ''}${sidebarOpen ? '' : ' is-sidebar-closed'}`} data-document-theme={documentThemeId} style={{ '--editor-zoom': zoom } as CSSProperties}>
@@ -1015,6 +1133,7 @@ export function App() {
             <div className="sidebar-tabs" role="tablist" aria-label="文档导航模式">
               <button type="button" role="tab" aria-selected={sidebarTab === 'files'} className={sidebarTab === 'files' ? 'is-active' : ''} onClick={() => setSidebarTab('files')}>文件</button>
               <button type="button" role="tab" aria-selected={sidebarTab === 'outline'} className={sidebarTab === 'outline' ? 'is-active' : ''} onClick={() => setSidebarTab('outline')}>大纲</button>
+              <button type="button" role="tab" aria-selected={sidebarTab === 'search'} className={sidebarTab === 'search' ? 'is-active' : ''} onClick={() => { setSidebarTab('search'); window.requestAnimationFrame(() => workspaceSearchInputRef.current?.focus()) }}>搜索</button>
             </div>
             <div className="sidebar-scroll">
               {sidebarTab === 'files' ? (
@@ -1087,8 +1206,63 @@ export function App() {
                     </div>
                   ) : null}
                 </div>
-              ) : (
+              ) : sidebarTab === 'outline' ? (
                 <Outline items={outline} activeLine={cursor.line} onSelect={handleOutlineSelect} />
+              ) : (
+                <div className="workspace-search">
+                  <label className="workspace-search-field">
+                    <Search size={15} strokeWidth={1.8} aria-hidden="true" />
+                    <input
+                      ref={workspaceSearchInputRef}
+                      type="search"
+                      value={workspaceSearchQuery}
+                      aria-label="搜索工作区文档"
+                      placeholder="搜索工作区文档…"
+                      onChange={(event) => setWorkspaceSearchQuery(event.target.value)}
+                    />
+                    {workspaceSearchQuery && <button type="button" aria-label="清除搜索" onClick={() => { setWorkspaceSearchQuery(''); workspaceSearchInputRef.current?.focus() }}>×</button>}
+                  </label>
+                  <div className="workspace-search-options" aria-label="搜索选项">
+                    <button type="button" className={searchOptions.caseSensitive ? 'is-active' : ''} aria-pressed={searchOptions.caseSensitive} onClick={() => setSearchOptions((current) => ({ ...current, caseSensitive: !current.caseSensitive }))}>Aa</button>
+                    <button type="button" className={searchOptions.wholeWord ? 'is-active' : ''} aria-pressed={searchOptions.wholeWord} onClick={() => setSearchOptions((current) => ({ ...current, wholeWord: !current.wholeWord }))}>全词</button>
+                    <button type="button" className={searchOptions.useRegex ? 'is-active' : ''} aria-pressed={searchOptions.useRegex} onClick={() => setSearchOptions((current) => ({ ...current, useRegex: !current.useRegex }))}>.* 正则</button>
+                  </div>
+                  {!workspaceRoot ? (
+                    <div className="sidebar-empty">
+                      <FolderOpen size={20} strokeWidth={1.6} aria-hidden="true" />
+                      <p>先打开一个文件夹，再搜索其中的 Markdown 文档。</p>
+                      <button type="button" className="text-button" onClick={() => void openWorkspace()}>打开工作区</button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="workspace-search-status" role="status">
+                        {workspaceSearchLoading ? '搜索中…' : workspaceSearchError ? `搜索失败：${workspaceSearchError}` : workspaceSearchQuery.trim() ? workspaceSearchResponse.truncated ? '显示前 300 条匹配' : `${workspaceSearchResponse.total} 条匹配` : '输入关键词搜索文件名内容'}
+                      </div>
+                      <div className="workspace-search-results">
+                        {workspaceSearchResponse.results.map((result, index) => (
+                          <button
+                            type="button"
+                            className="workspace-search-result"
+                            key={`${result.path}:${result.line}:${result.column}:${index}`}
+                            title={`${result.relativePath}:${result.line}:${result.column}`}
+                            onClick={() => {
+                              void openDocument(result.path).then(() => {
+                                window.requestAnimationFrame(() => window.requestAnimationFrame(() => editorRef.current?.selectLine(result.line)))
+                              })
+                            }}
+                          >
+                            <span className="workspace-search-location"><strong>{result.relativePath}</strong><span>第 {result.line} 行</span></span>
+                            <span className="workspace-search-excerpt">
+                              {result.excerpt.slice(0, result.matchStart)}
+                              <mark>{result.matchText}</mark>
+                              {result.excerpt.slice(result.matchStart + result.matchText.length)}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           </aside>
@@ -1181,6 +1355,8 @@ export function App() {
                 mode={mode}
                 workspaceRoot={workspaceRoot}
                 scrollPositionKey={activePath || null}
+                enableTypewriter={typewriterMode}
+                focusMode={focusMode}
                 onMarkdownChange={setMarkdown}
                 onSourceChange={setMarkdown}
                 onCursorChange={setCursor}
@@ -1228,28 +1404,64 @@ export function App() {
       </div>
 
       {searchOpen && (
-        <div className="search-panel" role="dialog" aria-label="搜索文档">
-          <Search size={17} strokeWidth={1.8} aria-hidden="true" />
-          <input
-            autoFocus
-            value={searchQuery}
-            aria-label="搜索文本"
-            placeholder="搜索文档…"
-            onChange={(event) => setSearchQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                setSearchOpen(false)
-                return
-              }
-              if (event.key === 'Enter' && searchQuery) {
-                event.preventDefault()
-                window.find(searchQuery, false, false, true)
-              }
-            }}
-          />
-          <span className="search-count">{searchQuery ? `${markdown.split(searchQuery).length - 1} 处` : ''}</span>
-          <button type="button" className="search-close" onClick={() => setSearchOpen(false)}>关闭</button>
+        <div className={`search-panel${replaceOpen ? ' is-replace-open' : ''}`} role="search" aria-label="查找与替换">
+          <div className="search-find-row">
+            <Search size={16} strokeWidth={1.8} aria-hidden="true" />
+            <input
+              ref={searchInputRef}
+              autoFocus
+              value={searchQuery}
+              aria-label="查找文本"
+              placeholder="查找当前文档…"
+              onChange={(event) => {
+                setSearchQuery(event.target.value)
+                setSearchPosition(null)
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setSearchOpen(false)
+                  return
+                }
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  handleFind(event.shiftKey)
+                }
+              }}
+            />
+            <span className="search-count" role="status">
+              {searchQuery ? searchPatternError ? '表达式无效' : searchPosition ? `${searchPosition.index}/${searchPosition.total}` : `${searchMatchCount} 处` : ''}
+            </span>
+            <button type="button" className="search-panel-control" aria-label="上一个匹配" title="上一个匹配（Shift+Enter）" onClick={() => handleFind(true)}>↑</button>
+            <button type="button" className="search-panel-control" aria-label="下一个匹配" title="下一个匹配（Enter）" onClick={() => handleFind(false)}>↓</button>
+            <button type="button" className={`search-panel-control${replaceOpen ? ' is-active' : ''}`} aria-expanded={replaceOpen} onClick={() => setReplaceOpen((current) => !current)}>替换</button>
+            <button type="button" className="search-panel-control" aria-label="关闭查找" title="关闭" onClick={() => setSearchOpen(false)}>×</button>
+          </div>
+          <div className="search-options-row" aria-label="查找选项">
+            <button type="button" className={`search-option${searchOptions.caseSensitive ? ' is-active' : ''}`} aria-pressed={searchOptions.caseSensitive} onClick={() => { setSearchOptions((current) => ({ ...current, caseSensitive: !current.caseSensitive })); setSearchPosition(null) }}>Aa 区分大小写</button>
+            <button type="button" className={`search-option${searchOptions.wholeWord ? ' is-active' : ''}`} aria-pressed={searchOptions.wholeWord} onClick={() => { setSearchOptions((current) => ({ ...current, wholeWord: !current.wholeWord })); setSearchPosition(null) }}>全词</button>
+            <button type="button" className={`search-option${searchOptions.useRegex ? ' is-active' : ''}`} aria-pressed={searchOptions.useRegex} onClick={() => { setSearchOptions((current) => ({ ...current, useRegex: !current.useRegex })); setSearchPosition(null) }}>.* 正则</button>
+          </div>
+          {replaceOpen && (
+            <div className="search-replace-row">
+              <span aria-hidden="true">替换</span>
+              <input
+                value={replacementQuery}
+                aria-label="替换为"
+                placeholder="替换为…"
+                onChange={(event) => setReplacementQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    handleReplaceCurrent()
+                  }
+                }}
+              />
+              <button type="button" className="search-panel-control" disabled={!searchQuery} onClick={handleReplaceCurrent}>替换</button>
+              <button type="button" className="search-panel-control" disabled={!searchQuery} onClick={handleReplaceAll}>全部替换</button>
+            </div>
+          )}
+          {searchPatternError && <div className="search-pattern-error" role="alert">正则表达式无效：{searchPatternError}</div>}
         </div>
       )}
 
@@ -1268,7 +1480,7 @@ export function App() {
                 ['保存', 'Ctrl + S'],
                 ['另存为', 'Ctrl + Shift + S'],
                 ['首选项与设置', 'Ctrl + ,'],
-                ['搜索', 'Ctrl + F'],
+                ['查找 / 替换', 'Ctrl + F / Ctrl + H'],
                 ['一级至六级标题', 'Ctrl + 1 … 6'],
                 ['正文段落', 'Ctrl + 0'],
                 ['加粗', 'Ctrl + B'],
@@ -1283,7 +1495,10 @@ export function App() {
                 ['代码块', 'Ctrl + Shift + K'],
                 ['切换源码模式', 'Ctrl + /'],
                 ['显示/隐藏侧栏', 'Ctrl + Shift + L'],
-                ['专注模式', 'Ctrl + Shift + F'],
+                ['上一个 / 下一个匹配', 'Shift + F3 / F3'],
+                ['工作区搜索', 'Ctrl + Shift + F'],
+                ['专注模式', 'F8'],
+                ['打字机模式', 'F9'],
                 ['打印', 'Ctrl + P'],
                 ['放大 / 缩小', 'Ctrl + + / −'],
               ].map(([label, keys]) => <div className="shortcut-row" key={label}><span>{label}</span><kbd>{keys}</kbd></div>)}

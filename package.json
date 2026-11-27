@@ -1,6 +1,6 @@
 {
   "name": "mojian",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Mojian: an AI-assisted Markdown writing studio for Windows and macOS.",
   "main": "./out/main/index.js",
   "author": "Mojian",
@@ -100,7 +100,7 @@
           "mkdn",
           "mkd"
         ],
-        "name": "Markdown document",
+        "name": "Mojian.Markdown",
         "description": "Markdown 文档",
         "role": "Editor"
       }

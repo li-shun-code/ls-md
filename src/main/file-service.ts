@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { FileNode } from '../shared/types'
+import { findTextMatches, getSearchPatternError, type TextSearchOptions } from '../shared/text-search'
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkdn', '.mkd'])
 const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'out', 'release'])
@@ -80,6 +81,79 @@ export async function listWorkspace(root: string): Promise<FileNode[]> {
   }
 
   return readDirectory(resolvedRoot)
+}
+
+export async function searchWorkspace(root: string, query: string, options: TextSearchOptions) {
+  const resolvedRoot = path.resolve(root)
+  const rootStats = await stat(resolvedRoot)
+  if (!rootStats.isDirectory()) {
+    throw new Error('工作区必须是文件夹')
+  }
+  if (!query.trim()) {
+    return { results: [], total: 0, truncated: false }
+  }
+  const patternError = getSearchPatternError(query, options)
+  if (patternError) {
+    throw new Error(patternError)
+  }
+
+  const pending: FileNode[] = [...await listWorkspace(resolvedRoot)]
+  const results: Array<{
+    path: string
+    relativePath: string
+    line: number
+    column: number
+    excerpt: string
+    matchStart: number
+    matchText: string
+  }> = []
+  let total = 0
+  let truncated = false
+  const maxResults = 300
+
+  while (pending.length > 0 && !truncated) {
+    const node = pending.pop()!
+    if (node.kind === 'directory') {
+      pending.push(...(node.children ?? []))
+      continue
+    }
+
+    let content: string
+    try {
+      content = await readFile(resolveWorkspacePath(resolvedRoot, node.path), 'utf8')
+    } catch {
+      continue
+    }
+
+    for (const match of findTextMatches(content, query, options)) {
+      total += 1
+      if (results.length >= maxResults) {
+        truncated = true
+        break
+      }
+
+      const lineStart = content.lastIndexOf('\n', match.start - 1) + 1
+      const foundLineEnd = content.indexOf('\n', match.start)
+      const lineEnd = foundLineEnd < 0 ? content.length : foundLineEnd
+      const contextStart = Math.max(lineStart, match.start - 60)
+      const contextEnd = Math.min(lineEnd, match.end + 60)
+      const prefix = contextStart > lineStart ? '…' : ''
+      const suffix = contextEnd < lineEnd ? '…' : ''
+      const excerpt = `${prefix}${content.slice(contextStart, contextEnd)}${suffix}`
+
+      results.push({
+        path: node.path,
+        relativePath: path.relative(resolvedRoot, node.path).split(path.sep).join('/'),
+        line: content.slice(0, match.start).split('\n').length,
+        column: match.start - lineStart + 1,
+        excerpt,
+        matchStart: prefix.length + match.start - contextStart,
+        matchText: match.text.split('\n')[0],
+      })
+    }
+  }
+
+  return { results, total, truncated }
 }
 
 export async function readMarkdown(root: string, filePath: string): Promise<string> {

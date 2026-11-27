@@ -1,3 +1,5 @@
+import type { TextSearchOptions } from './text-search'
+
 export type MarkdownMode = 'wysiwyg' | 'source'
 
 export type FileNode = {
@@ -37,6 +39,22 @@ export type DocumentVersion = DocumentVersionSummary & {
 export type WorkspaceSelection = {
   root: string
   tree: FileNode[]
+}
+
+export type WorkspaceSearchResult = {
+  path: string
+  relativePath: string
+  line: number
+  column: number
+  excerpt: string
+  matchStart: number
+  matchText: string
+}
+
+export type WorkspaceSearchResponse = {
+  results: WorkspaceSearchResult[]
+  total: number
+  truncated: boolean
 }
 
 export type OpenedDocument = {
@@ -198,6 +216,11 @@ export type MenuCommand =
   | 'view.zoomIn'
   | 'view.zoomOut'
   | 'view.resetZoom'
+  | 'view.toggleTypewriter'
+  | 'edit.find'
+  | 'edit.replace'
+  | 'edit.searchWorkspace'
+  | 'system.openDefaultApps'
   | { type: 'theme.select'; themeId: string }
   | 'help.shortcuts'
   | 'help.welcomeDocument'
@@ -227,6 +250,8 @@ export type DesktopBridge = {
   openMarkdownDialog: () => Promise<void>
   openMarkdownPath: (path: string) => Promise<void>
   listWorkspace: (root: string) => Promise<FileNode[]>
+  searchWorkspace: (root: string, query: string, options: TextSearchOptions) => Promise<WorkspaceSearchResponse>
+  openDefaultAppsSettings: () => Promise<boolean>
   readMarkdown: (path: string) => Promise<string>
   writeMarkdown: (path: string, content: string, reason?: DocumentSaveReason) => Promise<void>
   listDocumentVersions: (path: string) => Promise<DocumentVersionSummary[]>
